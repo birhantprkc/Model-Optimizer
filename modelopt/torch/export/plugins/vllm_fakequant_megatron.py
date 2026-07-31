@@ -137,8 +137,7 @@ class VllmFqGPTModelExporter(GPTModelExporter):
         block_size = 0
         name_to_value = self._get_weight_bias(module, dtype, name_to_value)
         if "weight" in name_to_value:
-            # Use the original device (avoid the CPU round-trip introduced by _get_weight_bias;
-            # fake-quantization runs on CUDA and the result is moved to CPU below).
+            # Use the original device (avoid the CPU round-trip introduced by _get_weight_bias).
             weight = module.weight.to(dtype)
             # Fold the weight_quantizer into the weight by applying fake-quantization
             # (quantize then dequantize). The weight_quantizer amax is not exported;
@@ -146,13 +145,7 @@ class VllmFqGPTModelExporter(GPTModelExporter):
             weight_quantizer = getattr(module, "weight_quantizer", None)
             if weight_quantizer is not None and weight_quantizer.is_enabled:
                 with torch.no_grad():
-                    # NVFP4-like kernels may need CUDA; if weights are CPU after gather, run on
-                    # CUDA then ``weight_quantizer.to`` back (full module round-trip).
-                    quant_device = (
-                        torch.device("cuda", torch.cuda.current_device())
-                        if weight.device.type == "cpu" and torch.cuda.is_available()
-                        else weight.device
-                    )
+                    quant_device = weight.device
                     # TensorQuantizer does not expose nn.Module.device (custom __getattr__).
                     param_device = next(weight_quantizer.parameters(), None)
                     buf_device = next(weight_quantizer.buffers(), None)

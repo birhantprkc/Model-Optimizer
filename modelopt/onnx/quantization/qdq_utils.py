@@ -685,8 +685,6 @@ def _convert_weight(
 def _cast_fp8(array: np.ndarray) -> np.ndarray:
     """Cast a numpy array to FLOAT8E4M3FN using PyTorch."""
     array_f32_t = torch.from_numpy(array)
-    if torch.cuda.is_available():
-        array_f32_t = array_f32_t.cuda()
     array_f8_t = array_f32_t.clamp(min=-448, max=448).to(torch.float8_e4m3fn).view(torch.uint8)
     array_f8 = array_f8_t.cpu().numpy().astype(np.uint8)
     return array_f8

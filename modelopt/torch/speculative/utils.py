@@ -106,16 +106,18 @@ class Tree:
 
     """
 
-    def __init__(self, tree_paths: list[list[int]]):
+    def __init__(self, tree_paths: list[list[int]], device: torch.device | str = "cpu"):
         """Initialize a Tree.
 
         Args:
             tree_paths (list[list[int]]): a list of tree paths
+            device: Device on which to create the tree attention mask.
         """
         self.total_nodes = 1
         self.root = TreeNode(0)
         self.num_children = defaultdict(int)
         self.max_depth = 0
+        self.device = torch.device(device)
         self.create_tree(tree_paths)
         self.create_attention_mask()
 
@@ -156,7 +158,7 @@ class Tree:
         """
         queue = deque([[node, 0] for node in self.root.children.values()])
         self.attention_mask = torch.full(
-            (self.total_nodes, self.total_nodes), True, device=torch.cuda.current_device()
+            (self.total_nodes, self.total_nodes), True, device=self.device
         )
         # Base token (in the first column) is attended by all draft tokens
         self.attention_mask[:, 0] = False
@@ -220,6 +222,7 @@ class AcceptanceRateValidation:
         self.model = model
         self.tokenizer = tokenizer
         self.end_token = tokenizer.convert_tokens_to_ids(tokenizer.eos_token)
+        self.device = next(model.parameters(), torch.empty(0)).device
 
         # Make sure the model is in eval mode
         self.model.eval()
@@ -237,9 +240,7 @@ class AcceptanceRateValidation:
             return_tensors="pt",
             add_special_tokens=False,
             truncation=True,
-        ).to(
-            torch.cuda.current_device(),
-        )
+        ).to(self.device)
         input_ids = output.input_ids
         return input_ids
 
@@ -352,7 +353,7 @@ class AcceptanceRateValidation:
         cnt = 0
         draft_tokens = None
         if tree_paths:
-            tree = Tree(tree_paths)
+            tree = Tree(tree_paths, device=input_ids.device)
 
         while input_ids.shape[1] < ground_truth.shape[1]:
             cnt += 1

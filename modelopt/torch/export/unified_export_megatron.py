@@ -34,7 +34,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from modelopt import __version__
-from modelopt.torch.utils import import_plugin
+from modelopt.torch.utils import collective_device, import_plugin
 
 from .convert_hf_config import convert_hf_quant_config_format
 from .model_config import (
@@ -1095,21 +1095,21 @@ class GPTModelExporter:
             )
 
         # Collective-safe missing-key check: all_reduce(MAX) over a local 0/1 flag
-        # so any rank's missing key surfaces everywhere. Flag lives on the current
-        # CUDA device -- NCCL has no CPU backend on the EP group.
+        # so any rank's missing key surfaces everywhere.
         local_missing = [
             k for k in (f"weight{i}" for i in range(num_experts)) if k not in state_dict
         ]
         if ep_size > 1:
+            expert_group = get_expert_model_parallel_group()
             missing_flag = torch.tensor(
                 [1 if local_missing else 0],
                 dtype=torch.int32,
-                device=torch.cuda.current_device(),
+                device=collective_device(expert_group),
             )
             torch.distributed.all_reduce(
                 missing_flag,
                 op=torch.distributed.ReduceOp.MAX,
-                group=get_expert_model_parallel_group(),
+                group=expert_group,
             )
             if missing_flag.item() != 0:
                 raise ValueError(

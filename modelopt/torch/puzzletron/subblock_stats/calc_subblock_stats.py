@@ -32,7 +32,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from tqdm import tqdm
 from transformers import PretrainedConfig
 
-from modelopt.torch.utils import json_dump
+from modelopt.torch.utils import get_accelerator_module, json_dump, resolve_device
 
 from ..anymodel.model_descriptor import ModelDescriptor, ModelDescriptorFactory
 from ..block_config import AttentionConfig, BlockConfig, FFNConfig, SubblockConfig
@@ -93,7 +93,20 @@ def calculate_subblock_stats(
             calc_runtime_for_subblocks,
         )
 
-    gpu = None if not torch.cuda.is_available() else torch.cuda.get_device_name()
+    device = resolve_device("auto")
+    accelerator_module = get_accelerator_module(device)
+    get_device_name = (
+        getattr(accelerator_module, "get_device_name", None)
+        if accelerator_module is not None
+        else None
+    )
+    if callable(get_device_name):
+        try:
+            gpu = get_device_name(device)
+        except TypeError:
+            gpu = get_device_name()
+    else:
+        gpu = None
     subblock_stats = {
         "args": dict(
             gpu=gpu,

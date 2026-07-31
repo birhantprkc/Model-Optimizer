@@ -26,6 +26,8 @@ from megatron.core.parallel_state import get_tensor_model_parallel_rank
 from megatron.core.tensor_parallel.mappings import gather_from_tensor_model_parallel_region
 from megatron.core.transformer.module import MegatronModule
 
+from modelopt.torch.utils import resolve_device
+
 from ..medusa.conversion import MedusaDMRegistry
 from ..medusa.medusa_model import MedusaModel
 
@@ -44,9 +46,7 @@ class MedusaLayer(MegatronModule):
         """
         super().__init__(config=config)
 
-        device = (
-            torch.device("cpu") if config.use_cpu_initialization else torch.cuda.current_device()
-        )
+        device = torch.device("cpu") if config.use_cpu_initialization else resolve_device("auto")
 
         self.activation_func = F.silu
 

@@ -45,6 +45,12 @@ def _parse_hf_ptq_args(monkeypatch, *args):
     return hf_ptq, parsed_args
 
 
+def test_default_device_is_auto(monkeypatch):
+    _, args = _parse_hf_ptq_args(monkeypatch, "--pyt_ckpt_path", "dummy")
+
+    assert args.device == "auto"
+
+
 def test_autoquant_recipe_builds_mtq_inputs(monkeypatch):
     """The recipe path maps an AutoQuantizeConfig to the expected mtq.auto_quantize inputs."""
     hf_ptq, args = _parse_hf_ptq_args(

@@ -40,6 +40,8 @@ from torch import Tensor
 from torch._subclasses import FakeTensor, FakeTensorMode
 from typing_extensions import override
 
+from modelopt.torch.utils.distributed import collective_device
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -376,20 +378,8 @@ def has_fake_tensor(v: Any) -> bool:
 def _get_device_for_distributed(
     group: Optional[torch.distributed.ProcessGroup] = None,
 ) -> torch.device:
-    """
-    Determine the appropriate device for distributed communication based on the backend.
-    NCCL backend requires CUDA tensors, while Gloo supports both CPU and CUDA.
-    """
-    if not torch.distributed.is_initialized():
-        return torch.device("cpu")
-
-    backend = torch.distributed.get_backend(group)
-    if backend == "nccl":
-        # NCCL requires CUDA tensors
-        return torch.device("cuda", torch.cuda.current_device())
-    else:
-        # Gloo and other backends support CPU tensors
-        return torch.device("cpu")
+    """Return a tensor device supported by the process group's backend."""
+    return collective_device(group)
 
 
 def distributed_isend_obj(

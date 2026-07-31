@@ -22,7 +22,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from modelopt.torch.utils import get_module_device
+from modelopt.torch.utils import accelerator_empty_cache, get_module_device
 
 from ..config import CalibrationConfig
 from ..conversion import print_sparse_attention_summary
@@ -138,7 +138,7 @@ def create_calibration_forward_loop(
 
                     # Clean up KV cache
                     del past_key_values
-                    torch.cuda.empty_cache()
+                    accelerator_empty_cache(device)
                 else:
                     # Full prefill without chunking
                     model(input_ids, use_cache=False)
@@ -219,7 +219,7 @@ def create_decode_calibration_forward_loop(
 
             # Clean up
             del past_key_values
-            torch.cuda.empty_cache()
+            accelerator_empty_cache(device)
 
     return forward_loop
 

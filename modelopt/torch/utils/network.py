@@ -29,6 +29,7 @@ import torch.nn as nn
 from torch.nn.modules.batchnorm import _BatchNorm
 from tqdm import tqdm
 
+from .device import resolve_device
 from .tensor import torch_to
 
 try:
@@ -103,12 +104,12 @@ def _get_execution_device_from_hook(module: nn.Module) -> torch.device | None:
 
     dev = getattr(hook, "execution_device", None)
     if dev is not None:
-        return torch.device("cuda", dev) if isinstance(dev, int) else torch.device(dev)
+        return resolve_device(dev) if isinstance(dev, int) else torch.device(dev)
 
     for h in getattr(hook, "hooks", ()):
         dev = getattr(h, "execution_device", None)
         if dev is not None:
-            return torch.device("cuda", dev) if isinstance(dev, int) else torch.device(dev)
+            return resolve_device(dev) if isinstance(dev, int) else torch.device(dev)
 
     return None
 

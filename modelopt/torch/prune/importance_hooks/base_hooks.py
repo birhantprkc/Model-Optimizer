@@ -26,7 +26,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch import nn
 
 import modelopt.torch.utils.distributed as dist
-from modelopt.torch.utils import json_dump, safe_load
+from modelopt.torch.utils import accelerator_empty_cache, json_dump, safe_load
 
 __all__ = [
     "ForwardHook",
@@ -38,15 +38,16 @@ __all__ = [
 ]
 
 
-def clear_gpu_memory(clear: bool) -> None:
-    """Clear GPU memory cache if requested.
+def clear_gpu_memory(clear: bool, device=None) -> None:
+    """Clear accelerator memory cache if requested.
 
     Args:
-        clear: If True, runs garbage collection and empties CUDA cache.
+        clear: If True, runs garbage collection and empties the accelerator cache.
+        device: Device whose cache should be emptied. Defaults to the current accelerator.
     """
     if clear:
         gc.collect()
-        torch.cuda.empty_cache()
+        accelerator_empty_cache(device)
 
 
 class ForwardHook(ABC):
@@ -447,26 +448,26 @@ class IterativeChannelContributionHook(ForwardHook):
         else:
             raise NotImplementedError
         del curr_activations
-        clear_gpu_memory(clear=self.clear_gpu_memory)
+        clear_gpu_memory(clear=self.clear_gpu_memory, device=output_tensor.device)
 
         s = scaling_factor_per_token.unsqueeze(-1) * output_tensor - output_curr  # Shape: (B, T, E)
         s_squared_per_token = torch.sum(s**2, dim=-1)  # Shape: (B, T)
         b = s @ self.weight_matrix  # Shape: (B, T, I)
         c = torch.sum(self.weight_matrix**2, dim=0)  # Shape: (I)
         del s, output_curr
-        clear_gpu_memory(clear=self.clear_gpu_memory)
+        clear_gpu_memory(clear=self.clear_gpu_memory, device=output_tensor.device)
 
         contribution_squared = (
             s_squared_per_token.unsqueeze(2) + 2 * activations * b + (activations**2) * c
         )  # Shape: (B, T, I)
         del s_squared_per_token, b, c, activations
-        clear_gpu_memory(clear=self.clear_gpu_memory)
+        clear_gpu_memory(clear=self.clear_gpu_memory, device=output_tensor.device)
 
         contribution = torch.sqrt(contribution_squared + self.epsilon)  # Shape: (B, T, I)
         mean_cont_per_channel = torch.mean(contribution, dim=(0, 1))  # Shape: (I)
         mean_cont_per_channel[self.pruned_channels] = torch.inf
         del contribution, contribution_squared
-        clear_gpu_memory(clear=self.clear_gpu_memory)
+        clear_gpu_memory(clear=self.clear_gpu_memory, device=output_tensor.device)
 
         self.agg_cont_per_channel += mean_cont_per_channel
         if n_channels_to_prune > 0:

@@ -47,7 +47,7 @@ from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
 from .. import distributed as dist
-from .. import print_rank_0
+from .. import print_rank_0, resolve_device
 from .megatron_generate import cp_gather_logits, cp_split_sequence, megatron_prefill
 
 __all__ = ["megatron_mmlu"]
@@ -174,6 +174,7 @@ def megatron_mmlu(
         dp_group = mpu.get_data_parallel_group()
 
     # Run inference in global batches.
+    device = resolve_device("auto")
     predictions: list[str] = [""] * len(encoded)
     evaluated = [False] * len(encoded)
     n_batches = (len(sorted_encoded) + batch_size - 1) // batch_size
@@ -205,11 +206,11 @@ def megatron_mmlu(
         if cp_size > 1:
             # Split across CP ranks, prefill locally, then gather logits back to the full sequence
             # so the per-example last-token indexing below is unchanged.
-            local_ids, local_position_ids = cp_split_sequence(padded.cuda(), cp_group)
+            local_ids, local_position_ids = cp_split_sequence(padded.to(device), cp_group)
             local_logits = megatron_prefill(model, local_ids, position_ids=local_position_ids)
             logits = cp_gather_logits(local_logits, cp_group, padded_len)  # [B, padded_len, vocab]
         else:
-            logits = megatron_prefill(model, padded.cuda())  # [B, padded_len, vocab]
+            logits = megatron_prefill(model, padded.to(device))  # [B, padded_len, vocab]
 
         for i, seq_len in enumerate(batch_len):
             answer_logits = logits[i, seq_len - 1, choice_ids]
@@ -223,8 +224,8 @@ def megatron_mmlu(
     # over the DP group so every rank ends with the full-dataset counts.
     subjects = sorted(set(all_subjects_seen))
     subj_idx = {s: i for i, s in enumerate(subjects)}
-    correct_t = torch.zeros(len(subjects), dtype=torch.long, device="cuda")
-    total_t = torch.zeros(len(subjects), dtype=torch.long, device="cuda")
+    correct_t = torch.zeros(len(subjects), dtype=torch.long, device=device)
+    total_t = torch.zeros(len(subjects), dtype=torch.long, device=device)
     for pred, label, subj, ev in zip(predictions, all_labels, all_subjects_seen, evaluated):
         if not ev:
             continue

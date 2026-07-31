@@ -225,7 +225,10 @@ class EmptyInitOnDevice(torch.overrides.TorchFunctionMode):
 
         Example::
 
-            with EmptyInitOnDevice("cuda", dtype=torch.bfloat16):
+            device = torch.accelerator.current_accelerator(check_available=True) or torch.device(
+                "cpu"
+            )
+            with EmptyInitOnDevice(device, dtype=torch.bfloat16):
                 model = LLaMA(model_config)
             model.load_state_dict(torch.load("llama-lit/7B/lit-llama.pth"))
         """

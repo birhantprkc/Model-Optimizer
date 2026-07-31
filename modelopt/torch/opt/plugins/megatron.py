@@ -24,7 +24,7 @@ import regex as re
 import torch
 from megatron.core.parallel_state import get_data_parallel_group
 
-from modelopt.torch.utils import safe_load
+from modelopt.torch.utils import accelerator_synchronize, safe_load
 
 from ..dynamic import DynamicModule
 
@@ -83,7 +83,7 @@ def _modelopt_get_extra_state(self):
         return None
 
     # Serialize state into byte tensor
-    torch.cuda.synchronize()
+    accelerator_synchronize()
     # Use torch.save for serialization to match safe_load
     buffer = BytesIO()
     torch.save(extra_state, buffer)

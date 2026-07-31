@@ -30,7 +30,7 @@ import modelopt.torch.quantization as mtq
 from modelopt.torch.distill.plugins.huggingface import KDTrainer
 from modelopt.torch.opt.plugins import ModelOptHFTrainer
 from modelopt.torch.opt.plugins.transformers import ModelOptHFArguments
-from modelopt.torch.utils import get_module_device, print_rank_0
+from modelopt.torch.utils import accelerator_empty_cache, get_module_device, print_rank_0
 
 from ..nn import TensorQuantizer
 from ..utils import (
@@ -282,7 +282,7 @@ class QATTrainer(ModelOptHFTrainer):
         # Force garbage collection to free up memory
         gc.collect()
 
-        torch.cuda.empty_cache()
+        accelerator_empty_cache(get_module_device(self.model))
 
         if self.accelerator.is_main_process:
             mtq.print_quant_summary(self.model)

@@ -22,7 +22,12 @@ import torch
 import torch.nn as nn
 
 from modelopt.torch.opt.searcher import SearchConfig
-from modelopt.torch.utils import print_rank_0
+from modelopt.torch.utils import (
+    accelerator_empty_cache,
+    get_accelerator_memory_info,
+    is_accelerator_device,
+    print_rank_0,
+)
 
 from .magnitude import get_nmprune_info
 from .module import SparseModule
@@ -64,9 +69,9 @@ def prepare(
 
     hessian_inv = invert(hessian)
 
-    # remove the Hessian matrix to save GPU memory
+    # Remove the Hessian matrix to save accelerator memory.
     del hessian
-    torch.cuda.empty_cache()
+    accelerator_empty_cache(weight.device)
 
     return weight, hessian_inv
 
@@ -153,7 +158,7 @@ class SparseGPTSearcher(BaseSparseSearcher):
             "row_block_size": -1,  # row block size in sparsegpt
             "hessian_damp": 0.1,  # hessian damp in sparsegpt
             "calib_size": 256,  # calibration size for hessian matrix calculation
-            "device": "cuda",  # device of hessian matrix
+            "device": "auto",  # preferred device for the Hessian matrix
         }
 
     def _check_weight_size(self, weight, mod_name) -> bool:
@@ -203,12 +208,13 @@ class SparseGPTSearcher(BaseSparseSearcher):
             del module.samples
 
     @staticmethod
-    def _is_memory_sufficient(device_id, threshold):
-        """Check if the memory usage on the CUDA device is below the threshold."""
-        total_memory = torch.cuda.get_device_properties(device_id).total_memory
-        allocated_memory = torch.cuda.memory_allocated(device_id)
-        free_memory = total_memory - allocated_memory
-        return free_memory / total_memory > (1 - threshold)
+    def _is_memory_sufficient(device, threshold):
+        """Check if the free accelerator memory is above the requested threshold."""
+        memory_info = get_accelerator_memory_info(device)
+        if memory_info is None:
+            return False
+        free_memory, total_memory = memory_info
+        return total_memory > 0 and free_memory / total_memory > (1 - threshold)
 
     @classmethod
     def _setup_forward_hook(cls, mod: SparseModule) -> None:
@@ -224,8 +230,8 @@ class SparseGPTSearcher(BaseSparseSearcher):
             cols = mod.weight.size(1)
 
         target_device = mod.weight.device
-        # Hessian matrix is stored in the GPU memory by default
-        if target_device.type == "cuda" and cls._is_memory_sufficient(target_device.index, 0.8):
+        # Store the Hessian on the accelerator when enough memory is available.
+        if is_accelerator_device(target_device) and cls._is_memory_sufficient(target_device, 0.8):
             hessian = torch.zeros((cols, cols), dtype=torch.float32).to(target_device)
         else:
             hessian = torch.zeros((cols, cols), dtype=torch.float32).to("cpu")
@@ -265,8 +271,8 @@ class SparseGPTSearcher(BaseSparseSearcher):
 
             # the hessian matrix is calculated as X * X^T
             target_device = mod.hessian.device
-            if mod.hessian.device.type == "cuda":
-                if cls._is_memory_sufficient(mod.hessian.device.index, 0.8):
+            if is_accelerator_device(mod.hessian.device):
+                if cls._is_memory_sufficient(mod.hessian.device, 0.8):
                     mod.hessian += inp.matmul(inp.t()).to(mod.hessian.device)
                 else:
                     target_device = "cpu"

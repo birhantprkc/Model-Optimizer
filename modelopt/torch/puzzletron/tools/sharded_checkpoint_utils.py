@@ -40,6 +40,7 @@ from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 from transformers.utils.hub import cached_file, get_checkpoint_shard_files
 
 import modelopt.torch.utils.distributed as dist
+from modelopt.torch.utils import with_device_index
 
 from ..utils.dummy_modules import DummyLMHead, DummyWTE
 from ..utils.misc import EmptyInitOnDevice
@@ -128,7 +129,7 @@ def load_and_shard_model(
         descriptor.requires_trust_remote_code() if trust_remote_code is None else trust_remote_code
     )
     runtime = SimpleNamespace(
-        device=torch.device(dist.local_rank()),
+        device=with_device_index("auto", dist.local_rank()),
         dtype=torch.bfloat16,
         global_rank=dist.rank(),
         world_size=dist.size(),
@@ -317,7 +318,7 @@ def load_state_dict_to_shards(
     assert len(unexpected_keys) == 0
     assert all("dummy_param" in key for key in missing_keys)
 
-    model_shard.cuda(dist.local_rank())
+    model_shard.to(with_device_index("auto", dist.local_rank()))
 
     dist.barrier()
 

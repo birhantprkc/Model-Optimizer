@@ -66,13 +66,14 @@ def _is_distributed_tensor(t: torch.Tensor) -> bool:
 def _gather_full(param: torch.Tensor, *, fsdp2: bool) -> torch.Tensor:
     """Return a materialised full tensor for ``param``.
 
-    Mirrors the FSDP2 branch in ``FastGen/fastgen/callbacks/ema.py:128-139``: if CPU
-    offloading is enabled the local shard must be moved to CUDA before ``full_tensor()``
-    can perform the all-gather (which requires a CUDA backend).
+    If CPU offloading is enabled, the local shard must be moved back to the device
+    type used by its DTensor mesh before ``full_tensor()`` performs the all-gather.
     """
     if fsdp2 and _is_distributed_tensor(param):
         if param.device.type == "cpu":
-            return param.to("cuda").full_tensor()
+            device_mesh = getattr(param, "device_mesh", None)
+            mesh_device_type = getattr(device_mesh, "device_type", "cpu")
+            return param.to(mesh_device_type).full_tensor()
         return param.full_tensor()
     return param
 

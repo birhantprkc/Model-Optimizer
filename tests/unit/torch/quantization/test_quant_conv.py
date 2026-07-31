@@ -411,13 +411,22 @@ class TestQuantConv3dNVFP4:
         ref = F.conv3d(x, m.weight)
         assert torch.allclose(out, ref)
 
+    def test_forward_nvfp4_runs_portable_fallback_on_cpu(self):
+        m = self._make_nvfp4_conv3d().eval()
+        x = torch.randn(1, NUM_IN_CHANNELS, 4, 4, 4)
+
+        out = m(x)
+
+        assert out.shape == (1, NUM_OUT_CHANNELS, 2, 2, 2)
+        assert torch.isfinite(out).all()
+
     def test_forward_nvfp4_training_warns_and_falls_back(self):
         """Training mode must fall back to the default (cuDNN) path with a warning.
 
         The implicit-GEMM kernel is inference-only; this exercises the CPU-visible
         training-fallback branch. We disable the quantizers so the default-path
         ``super().forward()`` does not try to run NVFP4 dynamic quantization
-        (which requires CUDA).
+        (which is covered separately).
         """
         m = self._make_nvfp4_conv3d()
         # NVFP4 predicate reads configuration (num_bits/block_sizes), not enable

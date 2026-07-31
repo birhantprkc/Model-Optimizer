@@ -23,6 +23,8 @@ from typing import Union, get_args, get_origin
 import numpy as np
 import torch
 
+from modelopt.torch.utils.device import get_accelerator_memory_info, is_accelerator_device
+
 from .model_config import (
     QUANTIZATION_FP8_PC_PT,
     QUANTIZATION_INT4_AWQ,
@@ -312,12 +314,12 @@ def pack_linear_weights(model_config: ModelConfig):
                 linear_layer.weights_scaling_factor is not None
                 and linear_layer.quantization is not None
             ):
-                # Quantize on CPU if we are short of GPU memory.
+                # Quantize on CPU if we are short of accelerator memory.
                 # Using 2x of the tensor size as a threshold.
-                if linear_layer.weight.is_cuda:
-                    free_mem, _ = torch.cuda.mem_get_info(linear_layer.weight.device)
-                    if (
-                        free_mem
+                if is_accelerator_device(linear_layer.weight.device):
+                    memory_info = get_accelerator_memory_info(linear_layer.weight.device)
+                    if memory_info is not None and (
+                        memory_info[0]
                         < 2 * linear_layer.weight.element_size() * linear_layer.weight.nelement()
                     ):
                         linear_layer.weight = linear_layer.weight.cpu()

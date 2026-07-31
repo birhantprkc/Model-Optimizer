@@ -23,6 +23,8 @@ from enum import Enum
 import torch
 from transformers import AutoModelForCausalLM, DynamicCache
 
+from modelopt.torch.utils import DeviceLike, get_module_device, resolve_device
+
 
 class RopeType(Enum):
     """Rope type enum."""
@@ -36,10 +38,18 @@ class RopeType(Enum):
 class ModelLoader:
     """A class to handle HuggingFace model loading and configuration."""
 
-    def __init__(self, hf_model_path: str, config_path: str):
+    def __init__(
+        self,
+        hf_model_path: str,
+        config_path: str,
+        device: DeviceLike = "auto",
+        dtype: torch.dtype | None = None,
+    ):
         """Initialize the ModelLoader."""
         self.config_path = config_path
         self.hf_model_path = hf_model_path
+        self.device = resolve_device(device)
+        self.dtype = dtype or (torch.float32 if self.device.type == "cpu" else torch.float16)
         self.model_type = self.get_model_type()
         self.hf_model = None
         self.rope_type = RopeType.K_ROPE_ROTATE_NEOX
@@ -53,10 +63,10 @@ class ModelLoader:
         """Load HuggingFace model based on model type."""
         print(f"Loading HF model from {self.hf_model_path} with model type {self.model_type}")
         self.hf_model = AutoModelForCausalLM.from_pretrained(
-            self.hf_model_path, torch_dtype=torch.float16, trust_remote_code=trust_remote_code
+            self.hf_model_path, torch_dtype=self.dtype, trust_remote_code=trust_remote_code
         )
 
-        return self.hf_model.eval().cuda()  # type: ignore[attr-defined]
+        return self.hf_model.eval().to(self.device)  # type: ignore[attr-defined]
 
     def get_rope_type(self):
         """Get rope type."""
@@ -110,18 +120,29 @@ def llm_to_onnx(model, output_dir, extra_inputs={}, extra_dyn_axes={}):
 
     dummy_bs = 1
     dummy_len = 10
-    dummy_input_ids = torch.randint(100, (dummy_bs, dummy_len), dtype=torch.int64).cuda()
+    model_device = get_module_device(model)
+    model_dtype = next(
+        (parameter.dtype for parameter in model.parameters() if parameter.is_floating_point()),
+        torch.float32,
+    )
+    dummy_input_ids = torch.randint(
+        100, (dummy_bs, dummy_len), dtype=torch.int64, device=model_device
+    )
     input_names = ["input_ids"]
     output_names = ["logits"]
     dynamic_axes = {"input_ids": {0: "batch_size", 1: "seq_len"}}
     dummy_kv_cache = ()
     for i in range(num_layers):
         dummy_k = torch.rand(
-            (dummy_bs, num_key_value_heads, dummy_len, hidden_size_per_layer), dtype=torch.float16
-        ).cuda()
+            (dummy_bs, num_key_value_heads, dummy_len, hidden_size_per_layer),
+            dtype=model_dtype,
+            device=model_device,
+        )
         dummy_v = torch.rand(
-            (dummy_bs, num_key_value_heads, dummy_len, hidden_size_per_layer), dtype=torch.float16
-        ).cuda()
+            (dummy_bs, num_key_value_heads, dummy_len, hidden_size_per_layer),
+            dtype=model_dtype,
+            device=model_device,
+        )
         dummy_kv_cache = (*dummy_kv_cache, (dummy_k, dummy_v))
         input_names.extend([f"past_key_values.{i}.key", f"past_key_values.{i}.value"])
         output_names.extend([f"present_key_values.{i}.key", f"present_key_values.{i}.value"])

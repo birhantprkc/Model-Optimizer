@@ -33,6 +33,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 import modelopt.torch.utils.distributed as dist
+from modelopt.torch.utils import accelerator_empty_cache, accelerator_synchronize, with_device_index
 
 from ..anymodel.converter import Converter
 from ..anymodel.model_descriptor import ModelDescriptorFactory
@@ -144,11 +145,12 @@ def validate_puzzle_solutions(args: DictConfig) -> None:
     )
 
     teacher_hidden_states = None
+    device = with_device_index("auto", dist.local_rank())
     if (args.teacher_dir is not None) and (not args.skip_validation):
         teacher_model = load_and_shard_model(
             checkpoint_path=args.teacher_dir, descriptor=descriptor
         )
-        teacher_model.cuda(dist.local_rank())
+        teacher_model.to(device)
         stitched_model = perform_pipeline_stitches(teacher_model, descriptor=descriptor)
         teacher_hidden_states = validate_model_and_extract_hidden_states(
             args,
@@ -159,11 +161,11 @@ def validate_puzzle_solutions(args: DictConfig) -> None:
             val_dataloader=val_dataloader,
         )
 
-        # Properly release CUDA memory after teacher validation
+        # Properly release accelerator memory after teacher validation.
         teacher_model.cpu()
         stitched_model.cpu()
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+        accelerator_empty_cache(device)
+        accelerator_synchronize(device)
         dist.barrier()
 
     for i_solution, puzzle_solution in tqdm(
@@ -201,7 +203,7 @@ def validate_puzzle_solutions(args: DictConfig) -> None:
         dist.barrier()
 
         if not args.skip_validation:
-            model.cuda(dist.local_rank())
+            model.to(device)
             stitched_model = perform_pipeline_stitches(model, descriptor=descriptor)
             validate_model_with_teacher_similarity_metrics(
                 args,
@@ -214,11 +216,11 @@ def validate_puzzle_solutions(args: DictConfig) -> None:
                 val_dataloader=val_dataloader,
             )
 
-            # Properly release CUDA memory after solution validation
+            # Properly release accelerator memory after solution validation.
             model.cpu()
             stitched_model.cpu()
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
+            accelerator_empty_cache(device)
+            accelerator_synchronize(device)
 
             # Stitching installs hooks that create reference cycles between the
             # model and its hook closures, so the per-solution CPU model is not

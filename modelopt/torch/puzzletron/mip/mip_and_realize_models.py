@@ -43,11 +43,7 @@ def launch_realize_model(cfg: DictConfig):
 
 
 def launch_mip_and_realize_model(cfg: DictConfig) -> list[str]:
-    # Determine device for distributed operations (NCCL requires CUDA tensors)
-    device = "cpu"
-    if dist.size() > 1:
-        if torch.distributed.get_backend() == "nccl":
-            device = torch.cuda.current_device()
+    device = dist.collective_device() if dist.size() > 1 else torch.device("cpu")
 
     if dist.is_master():
         solution_paths = launch_mip(cfg)

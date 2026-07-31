@@ -291,12 +291,6 @@ def _compute_amax_mse(calib_hist, calib_bin_edges, num_bits, unsigned, stride=1,
     counts = torch.from_numpy(calib_hist[:]).float()
     edges = torch.from_numpy(calib_bin_edges[:]).float()
 
-    device = None
-    if torch.cuda.is_available():
-        device = counts.device
-        counts = counts.cuda()
-        edges = edges.cuda()
-
     centers = (edges[1:] + edges[:-1]) / 2
 
     mses = []
@@ -318,9 +312,6 @@ def _compute_amax_mse(calib_hist, calib_bin_edges, num_bits, unsigned, stride=1,
 
     argmin = np.argmin(mses)
     calib_amax = centers[arguments[argmin]]
-
-    if device is not None:
-        calib_amax = calib_amax.to(device)
 
     return calib_amax
 

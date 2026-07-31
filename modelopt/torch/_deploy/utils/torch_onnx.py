@@ -60,7 +60,7 @@ from modelopt.onnx.utils import (
     remove_redundant_casts,
 )
 from modelopt.torch.quantization.export_onnx import configure_linear_module_onnx_quantizers
-from modelopt.torch.utils import flatten_tree, standardize_named_model_args
+from modelopt.torch.utils import flatten_tree, get_module_device, standardize_named_model_args
 from modelopt.torch.utils._pytree import TreeSpec
 
 from ..utils.onnx_optimizer import Optimizer
@@ -555,7 +555,11 @@ def get_onnx_bytes_and_metadata(
         or is_int8_quantized(model)
         or weights_dtype == "fp32"
     )
-    autocast = torch.autocast("cuda") if use_torch_autocast else nullcontext()
+    device_type = next(
+        (value.device.type for value in flat_input if isinstance(value, torch.Tensor)),
+        get_module_device(model).type,
+    )
+    autocast = torch.autocast(device_type) if use_torch_autocast else nullcontext()
 
     # Get output once (we export in inference mode - so also using inference mode here!)
     with torch.inference_mode(), autocast:

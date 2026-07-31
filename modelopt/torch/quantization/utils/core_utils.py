@@ -28,7 +28,12 @@ from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
 from torch.distributed.tensor import Replicate
 
 from modelopt.torch.quantization.config import QuantizerCfgEntry
-from modelopt.torch.utils import get_unwrapped_name, print_rank_0
+from modelopt.torch.utils import (
+    get_unwrapped_name,
+    is_accelerator_device,
+    print_rank_0,
+    resolve_device,
+)
 from modelopt.torch.utils.network import temporarily_remove_accelerate_hook
 
 if TYPE_CHECKING:
@@ -544,21 +549,24 @@ def fsdp2_weight_access_and_writeback_context(
             device_mesh=original_device_mesh,
         )
         unsharded_tensor = unsharded_dtensor.to_local()
-        # cpu_offload: gathered shard is on CPU; mirror to GPU for forward.
-        needs_gpu_copy = unsharded_tensor.device.type == "cpu" and torch.cuda.is_available()
-        gpu_tensor = (
-            unsharded_tensor.to(torch.cuda.current_device()) if needs_gpu_copy else unsharded_tensor
+        # cpu_offload: gathered shard is on CPU; mirror to the accelerator for forward.
+        accelerator_device = resolve_device(fsdp_device_mesh.device_type)
+        needs_accelerator_copy = unsharded_tensor.device.type == "cpu" and is_accelerator_device(
+            accelerator_device
         )
-        cpu_writeback_tensor = unsharded_tensor if needs_gpu_copy else None
+        accelerator_tensor = (
+            unsharded_tensor.to(accelerator_device) if needs_accelerator_copy else unsharded_tensor
+        )
+        cpu_writeback_tensor = unsharded_tensor if needs_accelerator_copy else None
         originals[name] = (
             param,
             unsharded_dtensor,
             original_placements,
             original_device_mesh,
             cpu_writeback_tensor,
-            gpu_tensor,
+            accelerator_tensor,
         )
-        _set_parameter(module, name, nn.Parameter(gpu_tensor))
+        _set_parameter(module, name, nn.Parameter(accelerator_tensor))
 
     try:
         yield
@@ -571,10 +579,12 @@ def fsdp2_weight_access_and_writeback_context(
             original_placements,
             original_device_mesh,
             cpu_writeback_tensor,
-            gpu_tensor,
+            accelerator_tensor,
         ) in originals.items():
             if cpu_writeback_tensor is not None:
-                cpu_writeback_tensor.data.copy_(gpu_tensor.data.to(cpu_writeback_tensor.device))
+                cpu_writeback_tensor.data.copy_(
+                    accelerator_tensor.data.to(cpu_writeback_tensor.device)
+                )
             original_param.to_local().data.copy_(
                 unsharded_dtensor.redistribute(
                     placements=original_placements, device_mesh=original_device_mesh

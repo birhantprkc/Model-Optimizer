@@ -30,6 +30,8 @@ from megatron.core.transformer import MegatronModule
 from megatron.core.utils import get_attr_wrapped_model, get_batch_on_this_cp_rank
 from tqdm import tqdm
 
+from ..device import get_accelerator_memory_info
+
 __all__ = ["megatron_generate", "megatron_prefill"]
 
 # ``is_hybrid_cp`` exists only in newer Megatron-Core; pass it only if the signature accepts it.
@@ -109,9 +111,12 @@ def _assert_mamba_within_int32_indexing(model: MegatronModule, batch_size: int, 
 
 def get_current_memory_info():
     """Get current memory usage."""
-    remaining_mem, total_mem = torch.cuda.mem_get_info()
+    memory_info = get_accelerator_memory_info()
     rank = torch.distributed.get_rank()
     world_size = torch.distributed.get_world_size()
+    if memory_info is None:
+        return f"rank {rank:3}/{world_size:3}  accelerator memory reporting unavailable"
+    remaining_mem, total_mem = memory_info
     remaining_pct = int(remaining_mem * 100 / total_mem)
     info = (
         f"rank {rank:3}/{world_size:3}  memory remaining "

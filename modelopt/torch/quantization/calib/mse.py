@@ -22,6 +22,8 @@ from collections.abc import Callable
 import torch
 import torch.nn.functional as F
 
+from modelopt.torch.utils.device import accelerator_synchronize, is_accelerator_device
+
 from .. import utils as quant_utils
 from .calibrator import _Calibrator
 
@@ -289,8 +291,8 @@ class NVFP4MSECalibrator(MseCalibrator):
         # not overlap. _losses_sum stores one fp32 reduced loss per candidate per
         # block. With 16-element NVFP4 blocks and bf16 weights, this is roughly
         # 128 / 16 * (4 / 2) = 16x the calibrated weight size.
-        if x.is_cuda:
-            torch.cuda.synchronize(x.device)
+        if is_accelerator_device(x.device):
+            accelerator_synchronize(x.device)
 
     @torch.no_grad()
     def compute_amax(self, verbose: bool = False):

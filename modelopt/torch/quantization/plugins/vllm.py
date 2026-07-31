@@ -27,6 +27,7 @@ import vllm.model_executor.layers.fused_moe.layer as vllm_fused_moe_layer
 import vllm.model_executor.layers.linear as vllm_linear
 from vllm.distributed.parallel_state import get_dp_group, get_ep_group, get_tp_group
 
+from ...utils.device import accelerator_empty_cache
 from ...utils.distributed import ParallelState
 from ..conversion import set_quantizer_by_cfg
 from ..nn import QuantLinearConvBase, QuantModule, QuantModuleRegistry, TensorQuantizer
@@ -600,22 +601,33 @@ class _QuantFusedMoEBase(QuantModule):
                 quantizer, (weight[i] for i in range(weight.shape[0])), keep_attrs
             )
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        accelerator_empty_cache(self.w13_weight.device)
 
 
-@QuantModuleRegistry.register({vllm_fused_moe_layer.FusedMoE: "vllm_FusedMoE"})
 class _QuantVLLMFusedMoE(_QuantFusedMoEBase):
     pass
 
 
-if vllm_shared_fused_moe_layer is not None:
+_vllm_fused_moe_cls = getattr(vllm_fused_moe_layer, "FusedMoE", None)
+if isinstance(_vllm_fused_moe_cls, type) and issubclass(_vllm_fused_moe_cls, torch.nn.Module):
+    QuantModuleRegistry.register({_vllm_fused_moe_cls: "vllm_FusedMoE"})(_QuantVLLMFusedMoE)
 
-    @QuantModuleRegistry.register(
-        {vllm_shared_fused_moe_layer.SharedFusedMoE: "vllm_SharedFusedMoE"}
-    )
+
+_vllm_shared_fused_moe_cls = (
+    getattr(vllm_shared_fused_moe_layer, "SharedFusedMoE", None)
+    if vllm_shared_fused_moe_layer is not None
+    else None
+)
+if isinstance(_vllm_shared_fused_moe_cls, type) and issubclass(
+    _vllm_shared_fused_moe_cls, torch.nn.Module
+):
+
     class _QuantVLLMSharedFusedMoE(_QuantFusedMoEBase):
         pass
+
+    QuantModuleRegistry.register({_vllm_shared_fused_moe_cls: "vllm_SharedFusedMoE"})(
+        _QuantVLLMSharedFusedMoE
+    )
 
 
 @QuantModuleRegistry.register({vllm_attention.Attention: "vllm_Attention"})

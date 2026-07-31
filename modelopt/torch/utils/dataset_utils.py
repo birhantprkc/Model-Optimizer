@@ -31,7 +31,16 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
+from .device import (
+    accelerator_empty_cache,
+    get_accelerator_device_count,
+    get_accelerator_memory_info,
+    get_accelerator_memory_stats,
+    resolve_device,
+    with_device_index,
+)
 from .logging import print_rank_0, warn_rank_0
+from .network import get_module_device
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
@@ -998,20 +1007,32 @@ def get_max_batch_size(
     enable_grad: bool = False,
 ):
     """Get the maximum batch size that can be used for the model."""
+    model_device = resolve_device(
+        sample_input_single_batch.device
+        if sample_input_single_batch is not None
+        else get_module_device(model)
+    )
 
-    def _get_free_gpu_mem():
-        min_gpu_free_mem = torch.cuda.get_device_properties(0).total_memory
+    def _get_free_accelerator_mem():
+        device_count = get_accelerator_device_count(model_device)
+        if device_count == 0:
+            return None
+        min_free_mem = None
         max_allocated_mem = 0
-        for device in range(torch.cuda.device_count()):
-            free_mem = torch.cuda.mem_get_info(device)[0]
-            if free_mem < min_gpu_free_mem:
-                min_gpu_free_mem = free_mem
-                max_allocated_mem = torch.cuda.max_memory_allocated(device)
-        return min_gpu_free_mem, max_allocated_mem
+        for device_index in range(device_count):
+            device = with_device_index(model_device, device_index)
+            memory_info = get_accelerator_memory_info(device)
+            if memory_info is None:
+                return None
+            free_mem, _ = memory_info
+            if min_free_mem is None or free_mem < min_free_mem:
+                min_free_mem = free_mem
+                max_allocated_mem = get_accelerator_memory_stats(device)["max_allocated"]
+        return min_free_mem, max_allocated_mem
 
-    torch.cuda.empty_cache()
+    accelerator_empty_cache(model_device)
 
-    free_mem_before, max_allocated_before = _get_free_gpu_mem()
+    memory_before = _get_free_accelerator_mem()
     is_enc_dec = model_type_is_enc_dec(model)
     # Call the module (not .forward) so nn.Module.__call__ runs pre/post-forward hooks — this is how
     # FSDP2 unshards/reshards a sharded root. generate() also calls the module internally.
@@ -1019,14 +1040,23 @@ def get_max_batch_size(
 
     if sample_input_single_batch is None:
         sample_input_single_batch = (
-            torch.ones([1, max_sample_length], dtype=torch.int32, device=model.device) * 100
+            torch.ones([1, max_sample_length], dtype=torch.int32, device=model_device) * 100
         )
 
     with _disable_use_cache(model):
         # Calculate single batch inference with dummy input.
         with torch.set_grad_enabled(enable_grad):
             infer_method(sample_input_single_batch)
-        free_mem_after, max_allocated_after = _get_free_gpu_mem()
+        memory_after = _get_free_accelerator_mem()
+
+        if memory_before is None or memory_after is None:
+            print_rank_0(
+                "Accelerator memory reporting is unavailable. Falling back to batch_size=1."
+            )
+            return 1
+
+        free_mem_before, max_allocated_before = memory_before
+        free_mem_after, max_allocated_after = memory_after
 
         mem_diff_per_data_batch = (
             max(
@@ -1061,10 +1091,10 @@ def get_max_batch_size(
                 try:
                     infer_method(target_input)
                     break
-                except torch.cuda.OutOfMemoryError:  # pragma: no cover - GPU OOM retry path
+                except torch.OutOfMemoryError:  # pragma: no cover - accelerator OOM retry path
                     target_data_batch = target_data_batch // 2  # pragma: no cover
                     target_input = _expand_to(target_data_batch)  # pragma: no cover
-                    torch.cuda.empty_cache()  # pragma: no cover
+                    accelerator_empty_cache(model_device)  # pragma: no cover
 
     # Regulate the data batch target to be 1, 2, 4, 8, 12, ..., capped at 64
     if target_data_batch < 2:
@@ -1125,17 +1155,17 @@ def _process_batch(
             if max_working_batch_size is None
             else max(batch_size, max_working_batch_size)
         )  # This batch size worked successfully
-    except torch.cuda.OutOfMemoryError:
+    except torch.OutOfMemoryError:
         assert batch_size > 1, (
-            "CUDA out of memory error occurred while processing a single sample. "
-            "This indicates the model is too large for the available GPU memory. "
+            "Out of memory while processing a single sample. "
+            "This indicates the model is too large for the available device memory. "
             "Consider reducing the model size, using a smaller max_sample_length, "
-            "or using a GPU with more memory."
+            "or using a device with more memory."
         )
 
     # Split the batch in half
     mid = (batch_size + 1) // 2
-    warn_rank_0(f"CUDA out of memory with batch size {batch_size}, trying with batch size {mid}")
+    warn_rank_0(f"Out of memory with batch size {batch_size}, trying with batch size {mid}")
     split_data_1 = {key: batch_data[key][:mid, ...] for key in batch_data}
     split_data_2 = {key: batch_data[key][mid:, ...] for key in batch_data}
 

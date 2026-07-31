@@ -131,6 +131,13 @@ def test_quantize(model_cls, config):
         mtq.print_quant_summary(model)
 
 
+def test_nvfp4_quantize_and_forward_on_cpu():
+    model = SimpleLinear()
+    calib_data = [model.get_input() for _ in range(2)]
+
+    quantize_model_and_forward(model, mtq.NVFP4_DEFAULT_CFG, calib_data)
+
+
 @pytest.mark.parametrize(
     ("model_cls", "quant_config"),
     [

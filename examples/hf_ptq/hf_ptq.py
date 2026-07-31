@@ -80,7 +80,12 @@ from modelopt.torch.speculative.eagle.utils import (
     EagleOfflineDataCollator,
     OfflineSupervisedDataset,
 )
-from modelopt.torch.utils import print_rank_0
+from modelopt.torch.utils import (
+    accelerator_empty_cache,
+    is_accelerator_device,
+    print_rank_0,
+    resolve_device,
+)
 from modelopt.torch.utils.dataset_utils import (
     create_forward_loop,
     get_dataset_dataloader,
@@ -1045,7 +1050,7 @@ def post_quantize(
             print("Continuing with generation...")
 
     # Run some samples
-    torch.cuda.empty_cache()
+    accelerator_empty_cache(args.dist_state.device)
     generated_ids_after_ptq = None
     if generated_ids_before_ptq is None:
         pass
@@ -1385,7 +1390,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
 
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help=(
+            "PyTorch device used for calibration (for example: auto, cpu, cuda, xpu, or mps). "
+            "The default selects the current accelerator and falls back to CPU."
+        ),
+    )
     parser.add_argument(
         "--qformat",
         help="Quantization format for single-format PTQ. For mixed-precision search, use an "
@@ -1659,8 +1671,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main(args: argparse.Namespace):
-    if not torch.cuda.is_available():
-        raise OSError("GPU is required for inference.")
+    args.device = resolve_device(args.device)
 
     random.seed(RAND_SEED)
     np.random.seed(RAND_SEED)
@@ -1668,8 +1679,8 @@ def main(args: argparse.Namespace):
     setup_distributed_args(args)
 
     try:
-        # launch a memory monitor to read the currently used GPU memory.
-        launch_memory_monitor()
+        if is_accelerator_device(args.dist_state.device):
+            launch_memory_monitor(device=args.dist_state.device)
 
         # Force eager execution for all model types.
         torch.compiler.set_stance("force_eager")

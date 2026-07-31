@@ -26,6 +26,7 @@ from tqdm import tqdm
 
 from modelopt.torch.utils import distributed as dist
 from modelopt.torch.utils.dataset_utils import get_dataset_dataloader
+from modelopt.torch.utils.device import resolve_device
 from modelopt.torch.utils.vlm_dataset_utils import get_vlm_dataset_dataloader
 
 from .megatron_generate import cp_split_sequence, megatron_prefill
@@ -47,7 +48,7 @@ def get_megatron_calibration_dataloader(
     batch_size: int = 1,
     num_samples: int | list[int] = 512,
     seq_length: int = 512,
-    device: torch.device | str | None = "cuda",
+    device: torch.device | str | None = "auto",
     apply_chat_template: bool = True,
     pack: bool = False,
 ) -> torch.utils.data.DataLoader:
@@ -60,6 +61,8 @@ def get_megatron_calibration_dataloader(
     All kwargs are forwarded to :func:`get_dataset_dataloader`; ``seq_length``
     maps to that function's ``max_sample_length``.
     """
+    device = resolve_device(device)
+
     # Deepcopy before mutating pad_token so the caller's tokenizer isn't silently changed.
     if getattr(tokenizer, "pad_token", None) is None:
         tokenizer = copy.deepcopy(tokenizer)
@@ -92,7 +95,7 @@ def get_megatron_calibration_forward_loop(
     batch_size: int = 1,
     num_samples: int | list[int] = 512,
     seq_length: int = 512,
-    device: torch.device | str | None = "cuda",
+    device: torch.device | str | None = "auto",
     apply_chat_template: bool = True,
     pack: bool = False,
 ) -> Callable[[torch.nn.Module], None]:
@@ -140,7 +143,7 @@ def get_megatron_vlm_calibration_forward_loop(
     dataset_name: str = "scienceqa",
     batch_size: int = 1,
     num_samples: int = 512,
-    device: torch.device | str | None = "cuda",
+    device: torch.device | str | None = "auto",
     subsets: list[str] | None = None,
     max_shards: int | None = None,
 ) -> Callable[[torch.nn.Module], None]:
@@ -165,6 +168,8 @@ def get_megatron_vlm_calibration_forward_loop(
     Returns:
         A ``forward_loop(model)`` callable to pass into ``mtq.quantize``, ``mtp.prune``, or other such APIs.
     """
+    device = resolve_device(device)
+
     # Shard the image-text data across DP ranks
     dp_size = mpu.get_data_parallel_world_size()
     dataloader = get_vlm_dataset_dataloader(

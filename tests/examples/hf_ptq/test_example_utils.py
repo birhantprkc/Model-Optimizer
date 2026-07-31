@@ -316,3 +316,9 @@ def test_get_model_uses_expected_dtype_kwarg(
     else:
         assert "trust_remote_code" not in calls["from_config"]
     assert calls["from_pretrained"]["trust_remote_code"] is True
+
+
+def test_is_model_on_device_compares_backend_type():
+    model = torch.nn.Linear(2, 2)
+
+    assert example_utils.is_model_on_device(model, "cpu")

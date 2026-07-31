@@ -50,7 +50,6 @@ from pathlib import Path
 import numpy as np
 import onnx
 import onnxruntime as ort
-import pynvml
 from onnx import onnx_pb
 from onnxruntime.quantization import calibrate
 from onnxruntime.quantization.base_quantizer import BaseQuantizer
@@ -504,12 +503,17 @@ def _collect_data_minmax_calibrator(calibrator, data_reader: CalibrationDataRead
     """
     run_options = ort.RunOptions()
     try:
-        pynvml.nvmlInit()
-        gpu_count = pynvml.nvmlDeviceGetCount()
-        pynvml.nvmlShutdown()
-    except Exception as e:
-        logger.error(f"Failed to get GPU count: {e}")
+        import pynvml
+    except ImportError:
         gpu_count = 0
+    else:
+        try:
+            pynvml.nvmlInit()
+            gpu_count = pynvml.nvmlDeviceGetCount()
+            pynvml.nvmlShutdown()
+        except pynvml.NVMLError as error:
+            logger.debug(f"NVIDIA GPU telemetry is unavailable: {error}")
+            gpu_count = 0
     gpu_str = ";".join([f"gpu:{i}" for i in range(gpu_count)])
     run_options.add_run_config_entry("memory.enable_memory_arena_shrinkage", f"cpu:0;{gpu_str}")
     while True:

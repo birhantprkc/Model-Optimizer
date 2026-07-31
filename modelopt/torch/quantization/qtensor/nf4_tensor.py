@@ -87,7 +87,7 @@ class NF4QTensor(BaseQuantizedTensor):
         Returns:
             tuple: Contains quantized data, input quantization config, and scale quantization config.
         """
-        cuda_ext = get_cuda_ext()
+        cuda_ext = get_cuda_ext() if input.is_cuda else None
 
         # pad the input if needed
         original_input = input
@@ -155,7 +155,7 @@ class NF4QTensor(BaseQuantizedTensor):
         """Dequantze NF4 packed tensor to a target dtype."""
         if dtype is None:
             dtype = self.metadata["dtype"]
-        cuda_ext = get_cuda_ext()
+        cuda_ext = get_cuda_ext() if self._quantized_data.is_cuda else None
 
         # get kwargs
         scales = kwarg["scale"]

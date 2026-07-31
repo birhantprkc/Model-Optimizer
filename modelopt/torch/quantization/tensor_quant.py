@@ -42,6 +42,195 @@ mx_format_map = {
 
 DISABLE_TRITON_KERNEL = False
 
+_FORMAT_MAX = {
+    (4, 3): 448.0,
+    (5, 2): 57344.0,
+    8: 127.0,
+    (2, 1): 6.0,
+    (1, 2): 3.5,
+    (0, 3): 7.0,
+    (3, 0): 16.0,
+    (3, 2): 28.0,
+    (2, 3): 7.5,
+}
+
+_TABLE_FORMAT_VALUES = {
+    (2, 1): [0, 0.5, 1, 1.5, 2, 3, 4, 6],
+    (1, 2): [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
+    (0, 3): [0, 1, 2, 3, 4, 5, 6, 7],
+    (3, 0): [0, 0.25, 0.5, 1, 2, 4, 8, 16],
+    (3, 2): [
+        0,
+        0.0625,
+        0.125,
+        0.1875,
+        0.25,
+        0.3125,
+        0.375,
+        0.4375,
+        0.5,
+        0.625,
+        0.75,
+        0.875,
+        1,
+        1.25,
+        1.5,
+        1.75,
+        2,
+        2.5,
+        3,
+        3.5,
+        4,
+        5,
+        6,
+        7,
+        8,
+        10,
+        12,
+        14,
+        16,
+        20,
+        24,
+        28,
+    ],
+    (2, 3): [
+        0,
+        0.125,
+        0.25,
+        0.375,
+        0.5,
+        0.625,
+        0.75,
+        0.875,
+        1,
+        1.125,
+        1.25,
+        1.375,
+        1.5,
+        1.625,
+        1.75,
+        1.875,
+        2,
+        2.25,
+        2.5,
+        2.75,
+        3,
+        3.25,
+        3.5,
+        3.75,
+        4,
+        4.5,
+        5,
+        5.5,
+        6,
+        6.5,
+        7,
+        7.5,
+    ],
+}
+
+
+def _round_to_finite_float(inputs: torch.Tensor, exponent_bits: int, mantissa_bits: int):
+    """Round to an FP8 format using portable PyTorch tensor operations."""
+    if (exponent_bits, mantissa_bits) == (4, 3):
+        min_normal, min_subnormal, max_value = 2**-6, 2**-9, 448.0
+    elif (exponent_bits, mantissa_bits) == (5, 2):
+        min_normal, min_subnormal, max_value = 2**-14, 2**-16, 57344.0
+    else:  # pragma: no cover - guarded by _round_to_format
+        raise ValueError(f"Unsupported FP format E{exponent_bits}M{mantissa_bits}.")
+
+    values = torch.nan_to_num(inputs.float().abs(), nan=max_value, posinf=max_value)
+    normal_exponent = torch.floor(torch.log2(torch.clamp(values, min=min_normal)))
+    normal_step = torch.exp2(normal_exponent - mantissa_bits)
+    step = torch.where(values < min_normal, min_subnormal, normal_step)
+    rounded = torch.round(values / step) * step
+    rounded = rounded.clamp(max=max_value)
+    return torch.where(inputs < 0, -rounded, rounded)
+
+
+def _round_to_table_format(inputs: torch.Tensor, format_: tuple[int, int]) -> torch.Tensor:
+    """Round to one of ModelOpt's table-defined low-precision formats."""
+    values = torch.tensor(_TABLE_FORMAT_VALUES[format_], device=inputs.device)
+    bounds = (values[:-1] + values[1:]) / 2
+    magnitudes = torch.nan_to_num(
+        inputs.float().abs(), nan=_FORMAT_MAX[format_], posinf=_FORMAT_MAX[format_]
+    )
+    indices = torch.bucketize(magnitudes, bounds, right=False)
+
+    # ModelOpt's CUDA reference uses ties-to-even except E3M0, which uses ties away from zero.
+    tie_indices = range(len(bounds)) if format_ == (3, 0) else range(1, len(bounds), 2)
+    for index in tie_indices:
+        indices += magnitudes == bounds[index]
+    rounded = values[indices]
+    return torch.where(inputs < 0, -rounded, rounded)
+
+
+def _round_to_format(inputs: torch.Tensor, format_: int | tuple[int, int]) -> torch.Tensor:
+    """Portable equivalent of the CUDA extension's ``convert_to_types`` helper."""
+    if format_ == 8:
+        return inputs.float().round().clamp(min=-127, max=127)
+    if format_ in {(4, 3), (5, 2)}:
+        return _round_to_finite_float(inputs, *format_)
+    if format_ in _TABLE_FORMAT_VALUES:
+        return _round_to_table_format(inputs, format_)
+    raise NotImplementedError(f"Portable quantization does not support format {format_}.")
+
+
+def _dynamic_block_quantize_eager(
+    inputs: torch.Tensor,
+    block_size: int,
+    amax: torch.Tensor | None,
+    format_: int | tuple[int, int],
+    scale_format: tuple[int, int],
+) -> torch.Tensor:
+    """Backend-neutral reference implementation of dynamic block fake quantization."""
+    if block_size <= 0:
+        raise ValueError(f"block_size must be positive, got {block_size}.")
+
+    original_shape = inputs.shape
+    padding = (-inputs.shape[-1]) % block_size
+    if padding:
+        inputs = torch.cat([inputs, inputs.new_zeros(*inputs.shape[:-1], padding)], dim=-1)
+    blocked = inputs.float().reshape(*inputs.shape[:-1], -1, block_size)
+    block_amax = blocked.abs().amax(dim=-1, keepdim=True)
+    element_max = _FORMAT_MAX[format_]
+
+    invalid_block = (block_amax == 0) | ~torch.isfinite(block_amax)
+    if amax is not None:
+        global_amax = amax.float()
+        if inputs.ndim == 2 and global_amax.numel() == inputs.shape[0]:
+            global_amax = global_amax.reshape(inputs.shape[0], 1, 1)
+        else:
+            global_amax = global_amax.reshape(-1)[0]
+        invalid_global = (global_amax == 0) | ~torch.isfinite(global_amax)
+        scale_max = _FORMAT_MAX[scale_format]
+        two_level_scale = (
+            scale_max
+            * element_max
+            / torch.where(invalid_global, torch.ones_like(global_amax), global_amax)
+        )
+        unscale = (
+            _round_to_format((block_amax / element_max) * two_level_scale, scale_format)
+            / two_level_scale
+        )
+        invalid_scale = invalid_block | invalid_global
+    elif scale_format == (8, 0):
+        ratio = block_amax / element_max
+        exponent = torch.ceil(torch.log2(torch.where(invalid_block, torch.ones_like(ratio), ratio)))
+        unscale = torch.exp2(exponent.clamp(min=-127, max=127))
+        invalid_scale = invalid_block
+    else:
+        unscale = _round_to_format(block_amax / element_max, scale_format)
+        invalid_scale = invalid_block
+
+    unscale = torch.where(invalid_scale, torch.ones_like(unscale), unscale)
+    zero_scale = unscale == 0
+    safe_unscale = torch.where(zero_scale, torch.ones_like(unscale), unscale)
+    outputs = _round_to_format(blocked / safe_unscale, format_) * safe_unscale
+    outputs = torch.where(zero_scale, torch.zeros_like(outputs), outputs)
+    outputs = outputs.reshape(inputs.shape)[..., : original_shape[-1]]
+    return outputs.to(dtype=inputs.dtype)
+
 
 def _fp8_eager(x, amax=None):
     dtype = x.dtype
@@ -53,7 +242,7 @@ def _fp8_eager(x, amax=None):
         scale = 448.0 / safe_amax
         scale_inv = 1 / scale
         x = (x.to(torch.float32) * scale).clamp(min=-448.0, max=448.0)
-    x = x.to(torch.float8_e4m3fn)
+    x = _round_to_format(x, (4, 3))
     if amax is not None:
         x = x.to(torch.float32) * scale_inv
     return x.to(dtype)
@@ -100,7 +289,12 @@ def fake_quant_impl(
     narrow_range=True,
 ):
     """Implementation of fake quantizing input according to number of bits."""
-    cuda_ext = get_cuda_ext()
+    if not inputs.is_cuda:
+        return _tensor_quant(inputs, amax, num_bits, unsigned, narrow_range)
+
+    cuda_ext = get_cuda_ext(raise_if_failed=False)
+    if cuda_ext is None:
+        return _tensor_quant(inputs, amax, num_bits, unsigned, narrow_range)
 
     if amax.numel() == 1:
         outputs = cuda_ext.fake_tensor_quant(inputs, amax, num_bits, unsigned, narrow_range)
@@ -168,8 +362,12 @@ def _dynamic_block_quantize_impl(
         num_bits = (exponent_bits, num_bits - exponent_bits - 1)
     if num_bits in mx_format_map:
         assert scale_bits in mx_format_map, f"Scale bits should be in {mx_format_map.keys()}"
+        if not inputs.is_cuda:
+            return _dynamic_block_quantize_eager(inputs, block_size, amax, num_bits, scale_bits)
         if scale_bits != (8, 0):
-            assert amax.is_cuda, "amax must be a CUDA tensor for dynamic block quantization."
+            assert amax is not None and amax.is_cuda, (
+                "amax must be a CUDA tensor for dynamic block quantization."
+            )
             if amax.numel() != 1:
                 amax = amax.amax()
         if (
@@ -246,7 +444,15 @@ try:
         scale_num_bits: int,
         scale_exponent_bits: int,
     ):
-        return torch.empty_like(inputs)
+        return _dynamic_block_quantize_impl(
+            inputs,
+            block_size,
+            amax,
+            num_bits,
+            exponent_bits,
+            scale_num_bits,
+            scale_exponent_bits,
+        )
 
     # Register the implementation for both CPU and CUDA
     torch.library.impl("tensorrt::quantize_op", ["cpu", "cuda"])(_quantize_impl)
@@ -254,6 +460,13 @@ try:
         _dynamic_block_quantize_impl
     )
     torch.library.impl("tensorrt::dynamic_block_quantize_op.overload", ["cpu", "cuda"])(
+        _dynamic_block_quantize_impl_none_amax
+    )
+    torch.library.impl("tensorrt::quantize_op", "CompositeExplicitAutograd")(_quantize_impl)
+    torch.library.impl("tensorrt::dynamic_block_quantize_op", "CompositeExplicitAutograd")(
+        _dynamic_block_quantize_impl
+    )
+    torch.library.impl("tensorrt::dynamic_block_quantize_op.overload", "CompositeExplicitAutograd")(
         _dynamic_block_quantize_impl_none_amax
     )
 
@@ -583,20 +796,43 @@ class StaticBlockwiseFP4FakeQuantFunction(Function):
         pass_through_bwd=False,
     ):
         """Forward method."""
-        if not triton_kernel.IS_AVAILABLE:
-            raise RuntimeError(
-                "static_blockwise_fp4_fake_quant requires triton. "
-                "Install with `pip install triton`."
-            )
         _save_for_backward_if_needed(ctx, pass_through_bwd, x, amax)
-        return triton_kernel.static_blockwise_fp4_fake_quant(
-            x,
-            amax,
-            global_amax,
-            quantize_block_scales,
-            fp8_max_for_normalization,
-            out_dtype,
-        )
+        if x.is_cuda and triton_kernel.IS_AVAILABLE:
+            return triton_kernel.static_blockwise_fp4_fake_quant(
+                x,
+                amax,
+                global_amax,
+                quantize_block_scales,
+                fp8_max_for_normalization,
+                out_dtype,
+            )
+
+        num_blocks = amax.numel()
+        if num_blocks == 0 or x.numel() % num_blocks != 0:
+            raise ValueError(
+                f"x.numel() ({x.numel()}) must be divisible by amax.numel() ({num_blocks})."
+            )
+        block_size = x.numel() // num_blocks
+        scale = amax.float().reshape(-1, 1) / _FORMAT_MAX[(2, 1)]
+        if quantize_block_scales:
+            if global_amax is None:
+                global_amax = amax.float().abs().amax()
+            scale_amax = (
+                global_amax.float()
+                * (_FORMAT_MAX[(4, 3)] / fp8_max_for_normalization)
+                / _FORMAT_MAX[(2, 1)]
+            )
+            invalid_amax = (scale_amax == 0) | ~torch.isfinite(scale_amax)
+            safe_amax = torch.where(invalid_amax, torch.ones_like(scale_amax), scale_amax)
+            normalized_scale = scale * (_FORMAT_MAX[(4, 3)] / safe_amax)
+            scale = _round_to_format(normalized_scale, (4, 3)) * (safe_amax / _FORMAT_MAX[(4, 3)])
+
+        blocked = x.float().contiguous().view(num_blocks, block_size)
+        zero_scale = scale == 0
+        safe_scale = torch.where(zero_scale, torch.ones_like(scale), scale)
+        outputs = _round_to_format(blocked / safe_scale, (2, 1)) * safe_scale
+        outputs = torch.where(zero_scale, torch.zeros_like(outputs), outputs)
+        return outputs.reshape_as(x).to(dtype=out_dtype or x.dtype)
 
     @staticmethod
     def backward(ctx, grad_outputs):
@@ -656,10 +892,10 @@ class FP4CastSTEFunction(Function):
             x: Input tensor of shape [NUM_BLOCKS, BLOCK_SIZE].
             out_dtype: Output dtype. Defaults to x.dtype.
         """
-        if not triton_kernel.IS_AVAILABLE:
-            raise RuntimeError("FP4CastSTEFunction requires triton.")
         ctx.save_for_backward(x)
-        return triton_kernel.static_blockwise_fp4_cast(x, out_dtype)
+        if x.is_cuda and triton_kernel.IS_AVAILABLE:
+            return triton_kernel.static_blockwise_fp4_cast(x, out_dtype)
+        return _round_to_format(x, (2, 1)).to(dtype=out_dtype or x.dtype)
 
     @staticmethod
     def backward(ctx, grad_outputs):

@@ -21,6 +21,8 @@ from contextlib import nullcontext
 import numpy as np
 import torch
 
+from .device import get_accelerator_module, is_accelerator_device
+
 __all__ = [
     "numpy_to_torch",
     "same_device_as",
@@ -32,13 +34,20 @@ __all__ = [
 
 
 def same_device_as(inputs: torch.Tensor):
-    """Return a context manager that sets the CUDA device to be the same as the input tensor.
+    """Return a context manager that selects the same accelerator as the input tensor.
 
-    Returns a null context if the tensor is on CPU or on the same device as the current CUDA device.
+    Returns a null context for CPU, single-device backends, and an already-selected device.
     """
-    if not inputs.is_cuda or inputs.device.index == torch.cuda.current_device():
+    if not is_accelerator_device(inputs.device) or inputs.device.index is None:
         return nullcontext()
-    return torch.cuda.device(inputs.device.index)
+    module = get_accelerator_module(inputs.device)
+    current_device = getattr(module, "current_device", None)
+    device_context = getattr(module, "device", None)
+    if not callable(device_context) or (
+        callable(current_device) and inputs.device.index == current_device()
+    ):
+        return nullcontext()
+    return device_context(inputs.device.index)
 
 
 def torch_to(data, *args, **kwargs):

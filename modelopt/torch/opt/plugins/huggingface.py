@@ -160,7 +160,7 @@ def enable_huggingface_checkpointing():
         mto.enable_huggingface_checkpointing()
 
         # Instantiate a HuggingFace model, modelopt_state will be automatically loaded if it exists.
-        model = AutoModelForCausalLM.from_pretrained(model_path).cuda()
+        model = AutoModelForCausalLM.from_pretrained(model_path)
 
     """
     for name, (classes, methods_list) in _LIBRARY_CLASSES_FOR_PATCHING.items():

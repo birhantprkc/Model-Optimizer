@@ -99,16 +99,10 @@ class HFEagleModel(EagleModel):
         )
 
     def _nvtx_range(self, name):
-        """Optionally create an NVTX range for the given name when config.eagle_enable_nvtx is set."""
+        """Optionally create a backend-neutral profiler range."""
         if not self.eagle_enable_nvtx:
             return contextlib.nullcontext()
-        try:
-            import torch.cuda.nvtx as nvtx
-
-            return nvtx.range(name)
-        except Exception as e:
-            print_rank_0(f"Failed to create NVTX range {name}: {e}")
-            return contextlib.nullcontext()
+        return torch.autograd.profiler.record_function(name)
 
     def _find_base_model_parts(self):
         """Find model parts from different models and set base_{part}_path attributes."""
@@ -935,7 +929,7 @@ class HFARValidation(AcceptanceRateValidation):
 
     def get_ground_truth(self, input_ids, osl):
         """This function returns ground truth output tokens from the base model."""
-        input_ids = copy.deepcopy(input_ids).to(torch.cuda.current_device())
+        input_ids = copy.deepcopy(input_ids).to(self.device)
         for _ in range(osl):
             input_id, _ = self.model.pseudo_speculative_generate(input_ids, steps=0)
             input_ids = torch.cat((input_ids, input_id.to(input_ids.device)), dim=-1)

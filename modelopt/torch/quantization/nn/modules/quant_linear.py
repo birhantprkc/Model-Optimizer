@@ -230,7 +230,7 @@ class RealQuantLinear(QuantModule):
             # Note: We cache the real-quant GEMM function to avoid matching overhead.
             # This assumes that the function will not change after the first call.
             assert self._real_quant_gemm_impl is not None
-            with torch.cuda.nvtx.range("RealQuantLinear gemm"):
+            with torch.autograd.profiler.record_function("RealQuantLinear gemm"):
                 output = self._real_quant_gemm_impl(
                     self, input, self.weight, self.bias, *args, **kwargs
                 )

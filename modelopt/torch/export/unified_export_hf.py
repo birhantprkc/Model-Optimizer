@@ -58,6 +58,7 @@ from modelopt.torch.quantization import set_quantizer_by_cfg_context
 from modelopt.torch.quantization.nn import SequentialQuantizer, TensorQuantizer
 from modelopt.torch.quantization.qtensor import MXFP8QTensor, NVFP4QTensor
 from modelopt.torch.quantization.utils import fsdp2_aware_weight_update, quantizer_attr_names
+from modelopt.torch.utils import accelerator_empty_cache
 from modelopt.torch.utils.dataset_utils import _disable_use_cache
 from modelopt.torch.utils.distributed import is_fsdp2_model
 
@@ -777,7 +778,7 @@ def _export_quantized_weight(
         else:
             _tied_cache[_tied_source_data_ptr] = sub_module
 
-    torch.cuda.empty_cache()
+    accelerator_empty_cache(quantized_weight.device)
 
 
 def _process_quantized_modules(

@@ -30,11 +30,14 @@ import torch.distributed
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, fully_shard
 from torch.distributed.tensor import DTensor
 
+from .device import resolve_device, set_accelerator_device, with_device_index
+
 __all__ = [
     "DistributedProcessGroup",
     "ParallelState",
     "backend",
     "barrier",
+    "collective_device",
     "fsdp2_wrap",
     "is_available",
     "is_fsdp2_model",
@@ -116,24 +119,40 @@ def _broadcast(tensor: torch.Tensor, src: int = 0, group=None) -> None:
         torch.distributed.broadcast(tensor, src, group)
 
 
+def collective_device(group=None) -> torch.device:
+    """Choose a tensor device supported by the active collective backend."""
+    if not is_initialized():
+        return torch.device("cpu")
+    distributed_backend = str(torch.distributed.get_backend(group)).lower()
+    accelerator_only_backends = ("nccl", "xccl", "hccl", "mccl")
+    if any(name in distributed_backend for name in accelerator_only_backends):
+        return resolve_device("auto")
+    return torch.device("cpu")
+
+
+# Backward-compatible private alias used by older callers.
+_collective_device = collective_device
+
+
 def broadcast(obj: Any, src: int = 0, group=None) -> Any:
     """Broadcasts an object from the source to all other processes."""
     if size() == 1:
         return obj
 
     # serialize
+    device = collective_device(group)
     if rank() == src:
-        tensor = _serialize(obj).cuda()
+        tensor = _serialize(obj).to(device)
 
     # broadcast the tensor size
-    tensor_size = (
-        torch.LongTensor([tensor.numel()]).cuda() if rank() == src else torch.LongTensor([0]).cuda()
+    tensor_size = torch.tensor(
+        [tensor.numel() if rank() == src else 0], dtype=torch.long, device=device
     )
     _broadcast(tensor_size, src=src, group=group)
 
     # broadcast the tensor
     if rank() != src:
-        tensor = torch.ByteTensor(size=(tensor_size.item(),)).cuda()
+        tensor = torch.empty(tensor_size.item(), dtype=torch.uint8, device=device)
     _broadcast(tensor, src=src, group=group)
 
     # deserialize
@@ -153,19 +172,21 @@ def allgather(obj: Any, group=None) -> list[Any]:
         return [obj]
 
     # serialize
-    tensor = _serialize(obj).cuda()
+    device = collective_device(group)
+    tensor = _serialize(obj).to(device)
 
     # gather the tensor size
-    tensor_size = torch.LongTensor([tensor.numel()]).cuda()
-    tensor_sizes = [torch.LongTensor([0]).cuda() for _ in range(size(group))]
+    tensor_size = torch.tensor([tensor.numel()], dtype=torch.long, device=device)
+    tensor_sizes = [torch.zeros(1, dtype=torch.long, device=device) for _ in range(size(group))]
     _allgather(tensor_sizes, tensor_size, group)
     tensor_sizes = [int(tensor_size.item()) for tensor_size in tensor_sizes]
     max_size = max(tensor_sizes)
+    local_size = int(tensor_size.item())
 
     # gather the tensor
-    tensors = [torch.ByteTensor(size=(max_size,)).cuda() for _ in tensor_sizes]
-    if tensor_size != max_size:
-        padding = torch.ByteTensor(size=(max_size - tensor_size,)).cuda()
+    tensors = [torch.empty(max_size, dtype=torch.uint8, device=device) for _ in tensor_sizes]
+    if local_size != max_size:
+        padding = torch.empty(max_size - local_size, dtype=torch.uint8, device=device)
         tensor = torch.cat((tensor, padding), dim=0)
     _allgather(tensors, tensor, group)
 
@@ -204,11 +225,14 @@ def master_only(func):
     return wrapper
 
 
-def setup(timeout: timedelta | None = None):
-    """Sets up the distributed environment."""
-    torch.cuda.set_device(local_rank())
+def setup(timeout: timedelta | None = None, device="auto") -> torch.device:
+    """Set up a process group for the selected device backend."""
+    distributed_device = with_device_index(device, local_rank())
+    set_accelerator_device(distributed_device)
     if not is_initialized():
-        torch.distributed.init_process_group("cpu:gloo,cuda:nccl", timeout=timeout)
+        distributed_backend = torch.distributed.get_default_backend_for_device(distributed_device)
+        torch.distributed.init_process_group(distributed_backend, timeout=timeout)
+    return distributed_device
 
 
 def cleanup():

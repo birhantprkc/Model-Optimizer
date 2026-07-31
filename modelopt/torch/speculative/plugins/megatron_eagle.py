@@ -56,6 +56,8 @@ from megatron.core.transformer.utils import sharded_state_dict_default
 from megatron.core.utils import make_tp_sharded_tensor_for_checkpoint
 from packaging.version import Version
 
+from modelopt.torch.utils import resolve_device
+
 from ..eagle.conversion import EagleDMRegistry
 from ..eagle.eagle_model import EagleModel
 from ..utils import AcceptanceRateValidation, get_default_attention_mask_and_position_ids
@@ -439,7 +441,7 @@ class EagleModule(MegatronModule):
             self.enorm = TENorm(config, config.hidden_size, config.layernorm_epsilon)
             self.hnorm = TENorm(config, config.hidden_size, config.layernorm_epsilon)
 
-        device = "cpu" if config.use_cpu_initialization else torch.cuda.current_device()
+        device = "cpu" if config.use_cpu_initialization else resolve_device("auto")
 
         # EAGLE-3 uses aux_hidden_states (usually >= 3); otherwise EAGLE-1
         fc_input_size_multiplier = (

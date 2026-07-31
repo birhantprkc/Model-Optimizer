@@ -34,7 +34,14 @@ from packaging.version import Version
 from transformers import HfArgumentParser, PreTrainedModel, Trainer, TrainerCallback
 from transformers import modeling_utils as tf_modeling_utils
 
-from modelopt.torch.utils import print_rank_0, report_memory
+from modelopt.torch.utils import (
+    get_accelerator_device_count,
+    is_accelerator_device,
+    print_rank_0,
+    report_memory,
+    resolve_device,
+    with_device_index,
+)
 
 from ..conversion import ModeloptStateManager, load_modelopt_state
 from .huggingface import (
@@ -422,13 +429,15 @@ class ModelOptArgParser(HfArgumentParser):
 
 
 def _report_memory(msg):
-    if not torch.cuda.is_available():
+    device = resolve_device("auto")
+    if not is_accelerator_device(device):
         return
     if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
-        report_memory(msg + ":", device=torch.cuda.current_device())
+        report_memory(msg + ":", device=device)
     else:
-        for device in range(torch.cuda.device_count()):
-            report_memory(f"{msg}, device={device}:", device=device)
+        for device_index in range(get_accelerator_device_count(device)):
+            indexed_device = with_device_index(device, device_index)
+            report_memory(f"{msg}, device={indexed_device}:", device=indexed_device)
 
 
 class _MemoryReportCallback(TrainerCallback):

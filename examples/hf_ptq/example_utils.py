@@ -44,6 +44,7 @@ from transformers import (
 )
 
 from modelopt.torch.export.model_utils import is_multimodal_model
+from modelopt.torch.utils import is_accelerator_device, resolve_device
 
 try:
     from huggingface_hub import snapshot_download
@@ -70,14 +71,14 @@ class DistributedState:
 def setup_distributed_args(args):
     """Initialize and attach ``args.dist_state`` (single-process if FSDP2 off)."""
     if getattr(args, "use_fsdp2", False):
-        # Raise the collective timeout above NCCL's 30-min default: rank 0's checkpoint write can
+        # Raise the collective timeout: rank 0's checkpoint write can
         # exceed it, and PyTorch 2.8 has no per-call barrier() timeout (must be set at PG creation).
-        dist_utils.setup(timeout=timedelta(hours=2))
+        device = dist_utils.setup(timeout=timedelta(hours=2), device=args.device)
         rank = dist_utils.rank()
         args.dist_state = DistributedState(
             rank=rank,
             world_size=dist_utils.size(),
-            device=torch.device(f"cuda:{dist_utils.local_rank()}"),
+            device=device,
             is_main=rank == 0,
         )
     else:
@@ -661,16 +662,17 @@ def _apply_dtype_to_config(model_kwargs, config_dtype, architecture, apply_confi
 
 def get_model(
     ckpt_path,
-    device="cuda",
+    device="auto",
     gpu_mem_percentage=0.8,
     trust_remote_code=False,
     use_seq_device_map=False,
     attn_implementation=None,
 ):
     print(f"Initializing model from {ckpt_path}")
+    device = resolve_device(device)
 
     device_map = "auto"
-    if device == "cpu":
+    if device.type == "cpu":
         device_map = "cpu"
 
     # Prepare config kwargs for loading
@@ -740,7 +742,7 @@ def get_model(
         with patch_compressed_linear_loading():
             model = AutoModelForCausalLM.from_pretrained(
                 ckpt_path,
-                device_map="auto",
+                device_map=device_map,
                 trust_remote_code=trust_remote_code,
                 dtype="auto",
             )
@@ -764,7 +766,7 @@ def get_model(
         model_kwargs["quantization_config"] = Mxfp4Config(dequantize=True)
         model = AutoModelForCausalLM.from_pretrained(
             ckpt_path,
-            device_map="cpu" if device == "cpu" else "sequential",
+            device_map="cpu" if device.type == "cpu" else "sequential",
             **model_kwargs,
         )
     else:
@@ -837,19 +839,22 @@ def get_model(
         _unpack_compressed_linear_weights(model, ckpt_path)
 
     # If device_map was disabled (None), manually move model to target device
-    if device_map is None and device != "cpu":
+    if device_map is None and device.type != "cpu":
         print(f"Moving model to {device} device...")
         model = model.to(device)
 
-    if device == "cuda" and not is_model_on_gpu(model):
-        print("Warning: Some parameters are not on a GPU. Calibration can be slow or hit OOM")
+    if is_accelerator_device(device) and not is_model_on_device(model, device):
+        print(
+            f"Warning: Some parameters are not on {device.type}. Calibration can be slow or hit OOM"
+        )
 
     return model
 
 
-def is_model_on_gpu(model) -> bool:
-    """Returns if the model is fully loaded on GPUs."""
-    return all("cuda" in str(param.device) for param in model.parameters())
+def is_model_on_device(model, device) -> bool:
+    """Return whether all model parameters use the selected device backend."""
+    device = resolve_device(device)
+    return all(param.device.type == device.type for param in model.parameters())
 
 
 def is_enc_dec(model_type) -> bool:

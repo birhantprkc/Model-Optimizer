@@ -21,6 +21,8 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import WhisperProcessor
 
+from .device import DeviceLike, resolve_device
+
 # Use dict to store the config for each dataset.
 # If we want to export more options to user like target languages, we need more standardized approach like dataclass.
 SUPPORTED_SPEECH_DATASET_CONFIG: dict[str, dict[str, Any]] = {
@@ -80,7 +82,7 @@ def get_speech_dataset_dataloader(
     processor: WhisperProcessor | None = None,
     batch_size: int = 1,
     num_samples: int = 512,
-    device: torch.device | None = None,
+    device: DeviceLike = "auto",
     dtype: torch.dtype | None = None,
 ) -> tuple[DataLoader, str]:
     """Get a dataloader with the dataset name and processor of the target model.
@@ -97,12 +99,13 @@ def get_speech_dataset_dataloader(
         An instance of dataloader.
     """
     assert processor is not None, "Please provide a valid processor."
+    device = resolve_device(device)
 
     dataset = _get_speech_dataset(dataset_name, num_samples=num_samples)
     first_sample = next(iter(dataset))
     first_text = first_sample["text"]
 
-    def preprocess_and_move_to_cuda(example):
+    def preprocess_and_move_to_device(example):
         # Process the audio example using the WhisperProcessor
         inputs = processor(
             example["audio"]["array"],  # The raw audio data
@@ -110,14 +113,14 @@ def get_speech_dataset_dataloader(
             return_tensors="pt",  # Return as PyTorch tensors
         )
 
-        # Move input_features to the GPU (cuda)
+        # Move input features to the selected device.
         input_features = inputs.input_features[0].to(device)
         if dtype:
             input_features = input_features.to(dtype)
 
         return {"input_features": input_features}
 
-    dataset = dataset.map(preprocess_and_move_to_cuda)
+    dataset = dataset.map(preprocess_and_move_to_device)
 
     def collate_fn(batch):
         # Stack all tensors (all should be of shape (80, 3000) already)

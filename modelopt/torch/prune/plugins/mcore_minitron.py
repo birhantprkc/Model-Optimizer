@@ -183,9 +183,7 @@ def drop_mcore_language_model_layers(model: nn.Module, *, layers_to_drop: list[i
         device=get_module_device(model),
     )
 
-    # Below distributed gather requires tensors to be on cuda
-    layers_remaining_per_pp = layers_remaining_per_pp.cuda()
-    layers_remaining = layers_remaining.cuda()
+    # Accelerator-only collective backends require tensors to stay on the model device.
     torch.distributed.all_gather_into_tensor(
         layers_remaining_per_pp, layers_remaining, group=get_pipeline_model_parallel_group()
     )

@@ -131,7 +131,7 @@ def calculate_losses_pipeline(
         stitched_model = perform_pipeline_stitches(stitched_model, descriptor)
 
     params = list(stitched_model.parameters())
-    model_device = params[0].device if params else "cpu"
+    model_device = params[0].device if params else torch.device("cpu")
 
     # Pre-populate outputs with dummy values for skipped batches
     start_batch = checkpoint_manager.current_batch if checkpoint_manager else 0
@@ -188,7 +188,9 @@ def calculate_losses_pipeline(
     # Use autocast for mixed precision, or nullcontext if disabled
     # (some models like Qwen3-VL MoE have dtype bugs under autocast)
     autocast_ctx = (
-        torch.autocast(device_type="cuda", dtype=autocast_dtype) if use_autocast else nullcontext()
+        torch.autocast(device_type=model_device.type, dtype=autocast_dtype)
+        if use_autocast
+        else nullcontext()
     )
     with autocast_ctx:
         fake_input_ids = fake_tensor(1, seq_len, dtype=torch.long, device=model_device)

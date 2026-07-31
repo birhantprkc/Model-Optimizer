@@ -23,7 +23,7 @@ from _test_utils.torch.quantization.tensor_quant_common import FakeTensorQuantTe
 
 import modelopt.torch.quantization as mtq
 import modelopt.torch.quantization.nn.modules.tensor_quantizer as tensor_quantizer_module
-from modelopt.torch.quantization import QuantModuleRegistry
+from modelopt.torch.quantization import QuantModuleRegistry, tensor_quant
 from modelopt.torch.quantization.config import QuantizerAttributeConfig, RotateConfig
 from modelopt.torch.quantization.nn import (
     SequentialQuantizer,
@@ -35,6 +35,60 @@ from modelopt.torch.quantization.nn import (
 
 class TestFakeTensorQuantCPU(FakeTensorQuantTester):
     device = "cpu"
+
+
+def test_dynamic_nvfp4_reference_preserves_representable_values():
+    inputs = torch.tensor(
+        [[0, 0.5, 1, 1.5, 2, 3, 4, 6, 0, -0.5, -1, -1.5, -2, -3, -4, -6]],
+        dtype=torch.float32,
+    )
+
+    outputs = tensor_quant.dynamic_block_quant(
+        inputs, 16, inputs.abs().amax(), None, (2, 1), (4, 3)
+    )
+
+    assert torch.equal(outputs, inputs)
+
+
+def test_int8_custom_op_uses_portable_reference():
+    inputs = torch.tensor([-1.0, -0.5, 0.0, 0.5, 1.0])
+    amax = torch.tensor(1.0)
+
+    outputs = tensor_quant.quantize_op(inputs, amax, 8, 0, False, True)
+
+    expected = torch.round(inputs * 127) / 127
+    assert torch.equal(outputs, expected)
+
+
+def test_dynamic_block_reference_handles_partial_final_block():
+    inputs = torch.linspace(-4, 4, 19).reshape(1, 19)
+
+    outputs = tensor_quant.dynamic_block_quant(
+        inputs, 16, inputs.abs().amax(), None, (2, 1), (4, 3)
+    )
+
+    assert outputs.shape == inputs.shape
+    assert torch.isfinite(outputs).all()
+
+
+def test_dynamic_mxfp4_reference_runs_without_global_amax():
+    inputs = torch.randn(2, 32)
+
+    outputs = tensor_quant.dynamic_block_quant(inputs, 32, None, None, (2, 1), (8, 0))
+
+    assert outputs.shape == inputs.shape
+    assert torch.isfinite(outputs).all()
+
+
+def test_static_nvfp4_reference_runs_on_cpu():
+    inputs = torch.linspace(-6, 6, 32).reshape(2, 16)
+    block_amax = inputs.abs().amax(dim=-1)
+
+    outputs = tensor_quant.static_blockwise_fp4_fake_quant(inputs, block_amax, block_amax.amax())
+
+    assert outputs.shape == inputs.shape
+    assert torch.isfinite(outputs).all()
+    assert outputs.abs().amax() <= inputs.abs().amax()
 
 
 class TestQuantizerAttributeConfig:

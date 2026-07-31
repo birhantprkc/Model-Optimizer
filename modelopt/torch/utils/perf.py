@@ -18,15 +18,22 @@
 import time
 from contextlib import ContextDecorator
 
-import torch
-
 from . import distributed as dist
+from .device import (
+    DeviceLike,
+    accelerator_empty_cache,
+    accelerator_synchronize,
+    get_accelerator_memory_info,
+    get_accelerator_memory_stats,
+    resolve_device,
+)
 from .logging import print_rank_0
 
 __all__ = [
     "AccumulatingTimer",
     "Timer",
     "clear_cuda_cache",
+    "get_accelerator_memory_stats",
     "get_cuda_memory_stats",
     "get_used_gpu_mem_fraction",
     "report_memory",
@@ -34,41 +41,42 @@ __all__ = [
 
 
 def clear_cuda_cache():
-    """Clear the CUDA cache."""
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    """Clear the current accelerator cache.
+
+    The CUDA-specific name is retained for backward compatibility.
+    """
+    accelerator_empty_cache()
 
 
 def get_cuda_memory_stats(device=None):
-    """Get memory usage of specified GPU in Bytes."""
-    return {
-        "allocated": torch.cuda.memory_allocated(device),
-        "max_allocated": torch.cuda.max_memory_allocated(device),
-        "reserved": torch.cuda.memory_reserved(device),
-        "max_reserved": torch.cuda.max_memory_reserved(device),
-    }
+    """Get accelerator memory usage in bytes.
+
+    The CUDA-specific name is retained for backward compatibility.
+    """
+    return get_accelerator_memory_stats(device)
 
 
-def get_used_gpu_mem_fraction(device="cuda:0"):
-    """Get used GPU memory as a fraction of total memory.
+def get_used_gpu_mem_fraction(device: DeviceLike = "auto"):
+    """Get used accelerator memory as a fraction of total memory.
 
     Args:
-        device: Device identifier (default: "cuda:0")
+        device: Device identifier. Defaults to the current accelerator.
 
     Returns:
         float: Fraction of GPU memory currently used (0.0 to 1.0).
-               Returns 0.0 if CUDA is not available.
+               Returns 0.0 if memory reporting is unavailable.
     """
-    if not torch.cuda.is_available():
+    memory_info = get_accelerator_memory_info(device)
+    if memory_info is None:
         return 0.0
 
-    free_memory, total_memory = torch.cuda.mem_get_info(device)
-    return (total_memory - free_memory) / total_memory
+    free_memory, total_memory = memory_info
+    return (total_memory - free_memory) / total_memory if total_memory > 0 else 0.0
 
 
 def report_memory(name="", rank=0, device=None):
-    """Simple GPU memory report."""
-    memory_stats = get_cuda_memory_stats(device)
+    """Print a simple accelerator memory report."""
+    memory_stats = get_accelerator_memory_stats(device)
     string = name + " memory (MB)"
     for k, v in memory_stats.items():
         string += f" | {k}: {v / 2**20: .2e}"
@@ -84,26 +92,25 @@ def report_memory(name="", rank=0, device=None):
 class Timer(ContextDecorator):
     """A Timer that can be used as a decorator as well."""
 
-    def __init__(self, name=""):
+    def __init__(self, name="", device: DeviceLike = "auto"):
         """Initialize Timer."""
         super().__init__()
         self.name = name
-        self._start_event = torch.cuda.Event(enable_timing=True)
-        self._stop_event = torch.cuda.Event(enable_timing=True)
+        self.device = resolve_device(device)
+        self._start_time = 0.0
         self.estimated_time = 0
         self.start()
 
     def start(self):
         """Start the timer."""
-        self._start_event.record()
+        accelerator_synchronize(self.device)
+        self._start_time = time.perf_counter()
         return self
 
     def stop(self) -> float:
         """End the timer."""
-        self._stop_event.record()
-        # Waits for everything to finish running
-        torch.cuda.synchronize()
-        self.estimated_time = self._start_event.elapsed_time(self._stop_event)
+        accelerator_synchronize(self.device)
+        self.estimated_time = (time.perf_counter() - self._start_time) * 1000
         return self.estimated_time
 
     def __enter__(self):
@@ -123,32 +130,27 @@ class AccumulatingTimer(ContextDecorator):
     _call_counts = {}
     _prefix = []
 
-    def __init__(self, name=""):
+    def __init__(self, name="", device: DeviceLike = "auto"):
         """Initialize AccumulatingTimer.
 
         Args:
             name: Name of the timer for reporting
-            use_cuda: Whether to synchronize CUDA before timing
+            device: Device whose queued work should be synchronized before timing.
         """
         super().__init__()
         self.name = name
-        self.use_cuda = torch.cuda.is_available()
+        self.device = resolve_device(device)
         self._start_time = None
 
     def start(self) -> None:
         """Start the timer."""
-        if self.use_cuda:
-            # Synchronize CUDA before measuring start time
-            torch.cuda.synchronize()
-        self._start_time = time.time()
+        accelerator_synchronize(self.device)
+        self._start_time = time.perf_counter()
 
     def stop(self) -> float:
         """End the timer and return the elapsed time in milliseconds."""
-        if self.use_cuda:
-            # Synchronize CUDA before measuring stop time
-            torch.cuda.synchronize()
-
-        elapsed_time = (time.time() - self._start_time) * 1000  # in milliseconds
+        accelerator_synchronize(self.device)
+        elapsed_time = (time.perf_counter() - self._start_time) * 1000  # in milliseconds
 
         # Update the accumulated time and call count
         name = self.name if not AccumulatingTimer._prefix else "->".join(AccumulatingTimer._prefix)

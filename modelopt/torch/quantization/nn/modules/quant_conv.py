@@ -137,6 +137,9 @@ class _QuantConv3d(QuantLinearConvBase):
             )
             return super().forward(input, *args, **kwargs)
 
+        if not input.is_cuda:
+            return super().forward(input, *args, **kwargs)
+
         # During calibration, only collect amax — use the faster cuDNN path.
         # _if_calib/_if_quant are internal TensorQuantizer state with no public property;
         # toggled via enable_calib()/disable_calib()/enable_quant()/disable_quant().

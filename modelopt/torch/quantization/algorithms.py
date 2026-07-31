@@ -36,7 +36,14 @@ from modelopt.torch.opt.conversion import ModeloptStateManager
 from modelopt.torch.opt.hparam import CustomHPType, Hparam, HPType
 from modelopt.torch.opt.searcher import LPS, BaseSearcher, SearchConfig, SearchStateDict
 from modelopt.torch.opt.utils import get_hparam, named_hparams
-from modelopt.torch.utils import create_param_grad_clear_hook, print_rank_0, report_memory
+from modelopt.torch.utils import (
+    create_param_grad_clear_hook,
+    get_module_device,
+    is_accelerator_device,
+    print_rank_0,
+    report_memory,
+    reset_accelerator_peak_memory_stats,
+)
 from modelopt.torch.utils.distributed import DistributedProcessGroup, ParallelState, is_master
 
 from . import config as mtq_config
@@ -1648,9 +1655,10 @@ class AutoQuantizeGradientSearcher(_AutoQuantizeBaseSearcher):
             )
 
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
-            report_memory("AutoQuantize: starting score estimation, ")
+        model_device = get_module_device(self.model)
+        if is_accelerator_device(model_device):
+            reset_accelerator_peak_memory_stats(model_device)
+            report_memory("AutoQuantize: starting score estimation, ", device=model_device)
 
         self._run_func(
             self.config["forward_backward_step"],
@@ -1658,8 +1666,8 @@ class AutoQuantizeGradientSearcher(_AutoQuantizeBaseSearcher):
             desc="Estimating auto_quantize scores",
         )
 
-        if torch.cuda.is_available():
-            report_memory("AutoQuantize: After score estimation")
+        if is_accelerator_device(model_device):
+            report_memory("AutoQuantize: After score estimation", device=model_device)
 
         for module in score_modules:
             cleanup_module_after_score_estimation(module)

@@ -330,15 +330,19 @@ def test_get_max_batch_size_oom_retry_shrinks_input():
     free_before = 1000
     free_after = 900  # 100 bytes per batch -> target = 1000/100 = 10
 
-    device_props = Mock()
-    device_props.total_memory = 10**12
-
     with (
-        patch("torch.cuda.empty_cache"),
-        patch("torch.cuda.get_device_properties", return_value=device_props),
-        patch("torch.cuda.device_count", return_value=1),
-        patch("torch.cuda.mem_get_info", side_effect=[(free_before, 0), (free_after, 0)]),
-        patch("torch.cuda.max_memory_allocated", side_effect=[0, 0]),
+        patch.object(dataset_utils, "accelerator_empty_cache"),
+        patch.object(dataset_utils, "get_accelerator_device_count", return_value=1),
+        patch.object(
+            dataset_utils,
+            "get_accelerator_memory_info",
+            side_effect=[(free_before, 1000), (free_after, 1000)],
+        ),
+        patch.object(
+            dataset_utils,
+            "get_accelerator_memory_stats",
+            side_effect=[{"max_allocated": 0}, {"max_allocated": 0}],
+        ),
     ):
         result = get_max_batch_size(
             model,

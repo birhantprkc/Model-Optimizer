@@ -285,7 +285,7 @@ class RemoteDataDescriptor(ABC):
 
 @dataclass(frozen=True, eq=True)
 class RemoteTensorDataDescriptor(RemoteDataDescriptor):
-    device: Literal["cuda", "cpu"]
+    device: str
     dtype: torch.dtype
     shape: torch.Size
 
@@ -650,14 +650,11 @@ class StitchedModule(nn.Module):
 
                         for key, value in items_to_send:
                             if isinstance(value, torch.Tensor):
-                                if value.is_cuda:
-                                    tensor_device = "cuda"
-                                elif value.is_cpu:
-                                    tensor_device = "cpu"
-                                else:
+                                if value.device.type == "meta":
                                     raise RuntimeError(
                                         f"Invalid tensor device to send to remote target: {value.device}"
                                     )
+                                tensor_device = value.device.type
 
                                 data_descriptor = RemoteTensorDataDescriptor(
                                     key=key,

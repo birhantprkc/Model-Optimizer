@@ -38,6 +38,7 @@ from modelopt.torch.kernels.common.attention import (
 from modelopt.torch.kernels.quantization.gemm import IS_AVAILABLE as IS_TRITON_AVAILABLE
 from modelopt.torch.opt.dynamic import DynamicModule
 from modelopt.torch.utils.distributed import ParallelState
+from modelopt.torch.utils.tensor import same_device_as
 
 from ..algorithms import AutoQuantizeGradientSearcher
 from ..conversion import register
@@ -1359,7 +1360,7 @@ class _QuantFP8Linear(QuantModule):
 
     def forward(self, input: Tensor) -> Tensor:
         if self.weight.element_size() == 1:
-            with torch.cuda.device(self.weight.device):
+            with same_device_as(self.weight):
                 weight = self._dequantize_weight(input.dtype)
         else:
             weight = self.weight
@@ -1370,7 +1371,7 @@ class _QuantFP8Linear(QuantModule):
         )
 
     def unpack_weight(self):
-        with torch.cuda.device(self.weight.device):
+        with same_device_as(self.weight):
             self.weight = nn.Parameter(
                 self._dequantize_weight(torch.get_default_dtype()),
                 requires_grad=False,
