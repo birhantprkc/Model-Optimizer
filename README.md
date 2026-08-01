@@ -15,7 +15,11 @@
 
 ______________________________________________________________________
 
-this is Eric Hartford / QuixiAI's fork of NVIDIA/Model-Optimizer but with the vendor lock-in removed.  it runs on any torch device, or cpu.  We will regularly sync it with upstream.
+This is Eric Hartford / QuixiAI's fork of NVIDIA/Model-Optimizer but with the vendor lock-in removed.  it runs on any torch device, or cpu.  We will regularly sync it with upstream.
+
+We have tested this by quantizing ReAligned to nvfp4 - on a Quad Intel B60 XPU workstation.  
+
+https://huggingface.co/Lazarus-Ai/ReAligned-Qwen3.5-35B-A3B-nvfp4
 
 **NVIDIA Model Optimizer** (referred to as **Model Optimizer**, or **ModelOpt**) is a library comprising state-of-the-art model optimization [techniques](#techniques) including quantization, pruning, Neural Architecture Search (NAS), distillation, speculative decoding and sparsity to accelerate models.
 
