@@ -24,12 +24,13 @@ import torch
 def xpu_kernel_ops():
     """Return the torch op namespace of an installed XPU kernel provider, or ``None``.
 
-    Importing ``vllm_xpu_kernels`` registers its SYCL kernels under ``torch.ops._xpu_C``.
+    The ops register when the ``_xpu_C`` extension module is loaded; importing the
+    ``vllm_xpu_kernels`` package alone does not pull it in.
     """
     if getattr(torch, "xpu", None) is None or not torch.xpu.is_available():
         return None
     try:
-        import vllm_xpu_kernels  # noqa: F401
+        from vllm_xpu_kernels import _xpu_C  # noqa: F401
     except ImportError:
         return None
     return getattr(torch.ops, "_xpu_C", None)
