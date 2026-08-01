@@ -20,7 +20,7 @@ from torch.autograd import Function
 
 import modelopt.torch.quantization as mtq
 from modelopt.torch.quantization.backends.gemm_registry import gemm_registry
-from modelopt.torch.quantization.backends.utils import fp4_compatible
+from modelopt.torch.quantization.backends.utils import fp4_compatible, quantizer_matches_default_cfg
 from modelopt.torch.quantization.qtensor import NVFP4QTensor, QTensorWrapper
 from modelopt.torch.quantization.utils import reduce_amax
 
@@ -210,44 +210,8 @@ def _nvfp4_availability_check(module, input, args, kwargs):
         return False
 
     # Check quantizer presence and configuration
-    if not hasattr(module, "input_quantizer") or not hasattr(module, "weight_quantizer"):
+    if not quantizer_matches_default_cfg(module, mtq.NVFP4_DEFAULT_CFG):
         return False
-
-    quant_cfg_list: list = mtq.NVFP4_DEFAULT_CFG["quant_cfg"]
-    # Quantizer configs
-    input_cfg = mtq.config.find_quant_cfg_entry_by_path(quant_cfg_list, "*input_quantizer").get(
-        "cfg", {}
-    )
-    weight_cfg = mtq.config.find_quant_cfg_entry_by_path(quant_cfg_list, "*weight_quantizer").get(
-        "cfg", {}
-    )
-    # cfg may be a list (SequentialQuantizer); fall back to the first element.
-    if isinstance(input_cfg, list):
-        input_cfg = input_cfg[0]
-    if isinstance(weight_cfg, list):
-        weight_cfg = weight_cfg[0]
-    if not isinstance(input_cfg, dict) or not isinstance(weight_cfg, dict):
-        return False
-
-    # Check input quantizer config
-    for key, value in input_cfg.items():
-        if key == "enable":
-            continue
-        if (
-            not hasattr(module.input_quantizer, key)
-            or getattr(module.input_quantizer, key) != value
-        ):
-            return False
-
-    # Check weight quantizer config
-    for key, value in weight_cfg.items():
-        if key == "enable":
-            continue
-        if (
-            not hasattr(module.weight_quantizer, key)
-            or getattr(module.weight_quantizer, key) != value
-        ):
-            return False
 
     # When the input.shape[1] is not the multiple of 64, GEMM will sometimes output NaN.
     # When the weight.shape[0] is not the multiple of 32, GEMM will not support.

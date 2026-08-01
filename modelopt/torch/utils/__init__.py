@@ -19,7 +19,7 @@ from ._pytree import *
 from .cpp_extension import *
 from .dataset_utils import *
 from .device import *
-from .distributed import collective_device
+from .distributed import collective_device as collective_device
 from .graph import *
 from .import_utils import *
 from .list import *

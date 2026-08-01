@@ -15,18 +15,85 @@
 
 """This file contains utility functions used by the quantization backend."""
 
+import functools
+
 import torch
+
+
+@functools.cache
+def xpu_kernel_ops():
+    """Return the torch op namespace of an installed XPU kernel provider, or ``None``.
+
+    Importing ``vllm_xpu_kernels`` registers its SYCL kernels under ``torch.ops._xpu_C``.
+    """
+    if getattr(torch, "xpu", None) is None or not torch.xpu.is_available():
+        return None
+    try:
+        import vllm_xpu_kernels  # noqa: F401
+    except ImportError:
+        return None
+    return getattr(torch.ops, "_xpu_C", None)
+
+
+def has_xpu_kernel(op_name: str) -> bool:
+    """Return whether an XPU kernel provider exposes ``op_name``."""
+    ops = xpu_kernel_ops()
+    return ops is not None and hasattr(ops, op_name)
 
 
 def fp8_compatible():
     """Check if the current device supports FP8."""
-    if not torch.cuda.is_available():
-        return False
-    return torch.cuda.get_device_capability(0) >= (8, 9)
+    if torch.cuda.is_available():
+        capability = torch.cuda.get_device_capability(0)
+        if torch.version.hip is not None:
+            # ROCm reports gfx architectures: FP8 needs MI300-class (gfx942) or newer.
+            return capability >= (9, 4)
+        return capability >= (8, 9)
+    return has_xpu_kernel("fp8_gemm_w8a16")
 
 
 def fp4_compatible():
     """Check if the current device supports FP4."""
-    if not torch.cuda.is_available():
+    if torch.cuda.is_available():
+        capability = torch.cuda.get_device_capability(0)
+        if torch.version.hip is not None:
+            # ROCm reports gfx architectures: FP4 arrives with gfx950 (MI350-class).
+            return capability >= (9, 5)
+        return capability >= (10, 0)
+    return has_xpu_kernel("nvfp4_gemm")
+
+
+def quantizer_matches_default_cfg(module, default_cfg: dict) -> bool:
+    """Return whether ``module``'s input/weight quantizers match a default quant config."""
+    # Import here to avoid a circular import at package init.
+    import modelopt.torch.quantization as mtq
+
+    if not hasattr(module, "input_quantizer") or not hasattr(module, "weight_quantizer"):
         return False
-    return torch.cuda.get_device_capability(0) >= (10, 0)
+
+    quant_cfg_list: list = default_cfg["quant_cfg"]
+    input_cfg = mtq.config.find_quant_cfg_entry_by_path(quant_cfg_list, "*input_quantizer").get(
+        "cfg", {}
+    )
+    weight_cfg = mtq.config.find_quant_cfg_entry_by_path(quant_cfg_list, "*weight_quantizer").get(
+        "cfg", {}
+    )
+    # cfg may be a list (SequentialQuantizer); fall back to the first element.
+    if isinstance(input_cfg, list):
+        input_cfg = input_cfg[0]
+    if isinstance(weight_cfg, list):
+        weight_cfg = weight_cfg[0]
+    if not isinstance(input_cfg, dict) or not isinstance(weight_cfg, dict):
+        return False
+
+    for quantizer, cfg in (
+        (module.input_quantizer, input_cfg),
+        (module.weight_quantizer, weight_cfg),
+    ):
+        for key, value in cfg.items():
+            # "enable" and "effective_bits" are config metadata without quantizer attributes.
+            if key in ("enable", "effective_bits"):
+                continue
+            if not hasattr(quantizer, key) or getattr(quantizer, key) != value:
+                return False
+    return True
