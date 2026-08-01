@@ -75,6 +75,8 @@ import torch
 from diffusers import QwenImagePipeline, QwenImageTransformer2DModel
 from diffusers.utils.torch_utils import randn_tensor
 
+from modelopt.torch.utils import resolve_device
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -447,7 +449,7 @@ def _smoke_test(
         ema_path=ema_path,
         torch_dtype=torch.bfloat16,
     )
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = resolve_device("auto")
     pipe = pipe.to(device)
     gen = torch.Generator(device=device).manual_seed(seed)
 

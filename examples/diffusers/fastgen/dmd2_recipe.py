@@ -72,6 +72,7 @@ from modelopt.torch.fastgen.config import DMDConfig
 from modelopt.torch.fastgen.discriminators import Discriminator_ImageDiT
 from modelopt.torch.fastgen.methods.dmd import DMDPipeline
 from modelopt.torch.fastgen.plugins import qwen_image as qwen_image_plugin
+from modelopt.torch.utils import get_accelerator_memory_stats, is_accelerator_device
 
 # Keys under the ``dmd2:`` YAML block that shadow fields on :class:`DMDConfig`. The
 # recipe deep-merges these on top of the loaded built-in recipe so users can tweak DMD2
@@ -505,9 +506,10 @@ class DMD2DiffusionRecipe(TrainDiffusionRecipe):
                     fake_score_steps,
                 )
 
-        if torch.cuda.is_available():
-            peak = torch.cuda.max_memory_allocated() / (1024**3)
-            reserved = torch.cuda.max_memory_reserved() / (1024**3)
+        if is_accelerator_device(self.device):
+            memory_stats = get_accelerator_memory_stats(self.device)
+            peak = memory_stats["max_allocated"] / (1024**3)
+            reserved = memory_stats["max_reserved"] / (1024**3)
             rank = dist.get_rank() if dist.is_initialized() else 0
             logging.info(
                 "[DMD2] PEAK_MEM rank=%d max_allocated=%.2fGiB max_reserved=%.2fGiB",
@@ -1060,12 +1062,13 @@ class DMD2DiffusionRecipe(TrainDiffusionRecipe):
         ddp_cfg = self.cfg.get("ddp", None)
 
         world_size = dist.get_world_size() if dist.is_initialized() else 1
+        default_backend = dist.get_default_backend_for_device(self.device)
 
         if ddp_cfg is not None:
             return {
                 "transformer": {
                     "_manager_type": "ddp",
-                    "backend": ddp_cfg.get("backend", "nccl"),
+                    "backend": ddp_cfg.get("backend", default_backend),
                     "world_size": world_size,
                     "activation_checkpointing": ddp_cfg.get("activation_checkpointing", False),
                 }
@@ -1087,7 +1090,7 @@ class DMD2DiffusionRecipe(TrainDiffusionRecipe):
                 "tp_size": tp_size,
                 "cp_size": cp_size,
                 "pp_size": pp_size,
-                "backend": "nccl",
+                "backend": default_backend,
                 "world_size": world_size,
                 "use_hf_tp_plan": fsdp_cfg.get("use_hf_tp_plan", False),
                 "activation_checkpointing": fsdp_cfg.get("activation_checkpointing", True),

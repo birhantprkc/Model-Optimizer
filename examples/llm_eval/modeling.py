@@ -71,6 +71,14 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
+from modelopt.torch.utils import (
+    get_accelerator_device_count,
+    get_accelerator_memory_stats,
+    is_accelerator_device,
+    resolve_device,
+    with_device_index,
+)
+
 
 class EvalModel(BaseModel, arbitrary_types_allowed=True):
     model_path: str
@@ -176,14 +184,15 @@ class SeqToSeqModel(EvalModel):
     model: PreTrainedModel | None = None
     tokenizer: PreTrainedTokenizer | None = None
     lora_path: str = ""
-    device: str = "cuda"
+    device: str = "auto"
     load_8bit: bool = False
     attn_implementation: str | None = None
 
     def load(self):
+        self.device = str(resolve_device(self.device))
         if self.model is None:
             args = {}
-            if self.device == "cuda":
+            if is_accelerator_device(self.device):
                 args.update(device_map="auto")
             if self.load_8bit:
                 args.update(device_map="auto", load_in_8bit=True)
@@ -240,9 +249,10 @@ class SeqToSeqModel(EvalModel):
 
 class CausalModel(SeqToSeqModel):
     def load(self):
+        self.device = str(resolve_device(self.device))
         if self.model is None:
             args = {}
-            if self.device == "cuda":
+            if is_accelerator_device(self.device):
                 args.update(device_map="auto")
             if self.load_8bit:
                 args.update(device_map="auto", load_in_8bit=True)
@@ -319,11 +329,12 @@ class LlamaModel(SeqToSeqModel):
     """
 
     def load(self):
+        self.device = str(resolve_device(self.device))
         if self.tokenizer is None:
             self.tokenizer = LlamaTokenizer.from_pretrained(self.model_path)
         if self.model is None:
             args = {}
-            if self.device == "cuda":
+            if is_accelerator_device(self.device):
                 args.update(device_map="auto")
             if self.load_8bit:
                 args.update(device_map="auto", load_in_8bit=True)
@@ -451,8 +462,9 @@ def load_quant(
 
 
 def print_gpu_utilization():
-    for i in range(torch.cuda.device_count()):
-        print(f"GPU {i}: {torch.cuda.memory_allocated(i) / 1e9} GB")
+    for i in range(get_accelerator_device_count()):
+        stats = get_accelerator_memory_stats(with_device_index("auto", i))
+        print(f"GPU {i}: {stats['allocated'] / 1e9} GB")
 
 
 class GPTQModel(LlamaModel):
@@ -464,6 +476,7 @@ class GPTQModel(LlamaModel):
 
     def load(self):
         # https://github.com/qwopqwop200/GPTQ-for-LLaMa/blob/05781593c818d4dc8adc2d32c975e83d17d2b9a8/llama_inference.py
+        self.device = str(resolve_device(self.device))
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         if not Path(self.quantized_path).exists():
@@ -491,6 +504,7 @@ class GPTQModel(LlamaModel):
 
 class ChatGLMModel(SeqToSeqModel):
     def load(self):
+        self.device = str(resolve_device(self.device))
         if self.tokenizer is None:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_path, trust_remote_code=self.trust_remote_code
@@ -529,7 +543,9 @@ class RWKVModel(EvalModel):
         tokenizer_path = self.download(self.tokenizer_path)
 
         if self.model is None:
-            model = RWKV(model=model_path, strategy="cuda fp16")
+            # The RWKV library's accelerator strategies are CUDA-only.
+            strategy = "cuda fp16" if torch.cuda.is_available() else "cpu fp32"
+            model = RWKV(model=model_path, strategy=strategy)
             self.model = rwkv.utils.PIPELINE(model, tokenizer_path)
 
     def run(self, prompt: str, **kwargs) -> str:

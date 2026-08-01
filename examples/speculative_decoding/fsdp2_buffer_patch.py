@@ -125,6 +125,8 @@ Only needed in MiniMax-M2.7 pipeline YAMLs.
 
 import torch
 
+from modelopt.torch.utils import resolve_device
+
 # Dtype encoding for the broadcast dtype-sync step.
 _DTYPE_TO_CODE = {
     torch.float32: 0,
@@ -330,7 +332,7 @@ def _clip_grad_norm(parameters, max_norm, norm_type=2):
     if grads:
         device = grads[0]._local_tensor.device if isinstance(grads[0], DTensor) else grads[0].device
     else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = resolve_device("auto")
 
     # Shard DTensors hold partial data — need all_reduce for global norm.
     # Replicate DTensors and regular tensors already hold full data.

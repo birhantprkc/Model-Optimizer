@@ -61,7 +61,7 @@ from modelopt.torch.speculative.plugins.hf_training_args import (
     TrainingArguments as SpecTrainingArgs,
 )
 from modelopt.torch.speculative.utils import load_vlm_or_llm, patch_transformers5_params_loading
-from modelopt.torch.utils import print_rank_0
+from modelopt.torch.utils import get_accelerator_device_count, print_rank_0
 from modelopt.torch.utils.distributed import is_master, local_rank
 
 torch.manual_seed(0)
@@ -114,13 +114,13 @@ def _parse_cli() -> tuple[str, bool, list[str]]:
 def init_distributed_env(training_args: transformers.TrainingArguments) -> None:
     """Resolve dp_shard_size from the live env and attach a ParallelismConfig in-place.
 
-    Reads ``WORLD_SIZE`` / ``torch.cuda.device_count()`` and (when actually distributed)
+    Reads ``WORLD_SIZE`` / ``get_accelerator_device_count()`` and (when actually distributed)
     builds an ``accelerate.ParallelismConfig`` on ``training_args``. Kept out of the
     Pydantic schema so the recipe stays a pure declarative spec.
     """
     if training_args.cp_size < 1:
         raise ValueError(f"cp_size must be >= 1, got {training_args.cp_size}.")
-    world_size = int(os.environ.get("WORLD_SIZE", torch.cuda.device_count() or 1))
+    world_size = int(os.environ.get("WORLD_SIZE", get_accelerator_device_count() or 1))
     if training_args.dp_shard_size is None:
         training_args.dp_shard_size = world_size // training_args.cp_size
     if training_args.dp_shard_size < 1:

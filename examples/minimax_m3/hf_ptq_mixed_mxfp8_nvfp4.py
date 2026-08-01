@@ -26,7 +26,7 @@ Usage:
         --bf16_ckpt /models/minimax-m3-bf16 \\
         --recipe huggingface/minimax_m3_vl/ptq/nvfp4_experts_only \\
         --output_ckpt /workspace/quant/minimax-m3-mxfp8-nvfp4-mixed \\
-        --device cuda
+        --device auto
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ import modelopt.torch.quantization as mtq
 from modelopt import __version__
 from modelopt.recipe import load_recipe
 from modelopt.torch.quantization.qtensor.nvfp4_tensor import NVFP4QTensor
+from modelopt.torch.utils import accelerator_empty_cache, resolve_device
 
 BLOCK_SIZE = 16
 
@@ -153,8 +154,7 @@ def _quantize_layer(
             output[f"{key}.input_scale"] = torch.tensor(1.0, dtype=torch.float32).reshape(())
 
     del model
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    accelerator_empty_cache()
     return output
 
 
@@ -194,7 +194,7 @@ def _load_layer_weights(
     checkpoint: Path,
     weight_map: dict[str, str],
     keys: list[str],
-    device: str,
+    device: torch.device,
 ) -> dict[tuple[int, str], torch.Tensor]:
     weights: dict[tuple[int, str], torch.Tensor] = {}
     keys_by_shard: dict[str, list[str]] = defaultdict(list)
@@ -218,7 +218,7 @@ def _quantize_experts(
     destination: Path,
     weight_map: dict[str, str],
     quantize_config: dict[str, Any],
-    device: str,
+    device: torch.device,
 ) -> tuple[dict[str, str], list[str]]:
     keys_by_layer: dict[int, list[str]] = defaultdict(list)
     for key in weight_map:
@@ -306,12 +306,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bf16_ckpt", required=True, help="BF16 source for routed experts")
     parser.add_argument("--recipe", required=True, help="expert-only NVFP4 recipe")
     parser.add_argument("--output_ckpt", required=True, help="mixed checkpoint output")
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help=(
+            "PyTorch device used for quantization (for example: auto, cpu, cuda, xpu, or mps). "
+            "The default selects the current accelerator and falls back to CPU."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    device = resolve_device(args.device)
     mxfp8 = Path(args.mxfp8_ckpt)
     bf16 = Path(args.bf16_ckpt)
     destination = Path(args.output_ckpt)
@@ -327,7 +335,7 @@ def main() -> None:
         destination,
         bf16_map,
         quantize_config,
-        args.device,
+        device,
     )
     _copy_mxfp8_base(mxfp8, destination, mxfp8_map, new_index)
     new_index = _rename_checkpoint_shards(destination, new_index)

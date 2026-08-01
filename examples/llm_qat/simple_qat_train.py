@@ -27,6 +27,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
 from modelopt.recipe import ModelOptPTQRecipe, load_recipe
+from modelopt.torch.utils import resolve_device
 
 
 def get_dataloader(args, tokenizer):
@@ -112,14 +113,14 @@ def main() -> None:
     # modelopt state will be saved automatically to "modelopt_state.pt"
     mto.enable_huggingface_checkpointing()
 
+    device = resolve_device("auto")
+
     # Load model and initialize loss
-    model = AutoModelForCausalLM.from_pretrained(args.model_path).cuda()
+    model = AutoModelForCausalLM.from_pretrained(args.model_path).to(device)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
 
     # Get dataloaders
     train_dataloader, calib_dataloader = get_dataloader(args, tokenizer)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Calibrate the model
     def calibrate(m: nn.Module):

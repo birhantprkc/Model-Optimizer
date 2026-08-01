@@ -24,6 +24,7 @@ from models_utils import MODEL_DEFAULTS, MODEL_PIPELINE, MODEL_REGISTRY, ModelTy
 from quantize_config import ModelConfig
 
 import modelopt.torch.quantization as mtq
+from modelopt.torch.utils import resolve_device
 
 
 class PipelineManager:
@@ -143,17 +144,18 @@ class PipelineManager:
             self.logger.info("Skipping device setup for LTX-2 pipeline (handled internally)")
             return
 
+        device = resolve_device("auto")
         if self.config.cpu_offloading:
             self.logger.info("Enabling CPU offloading for memory efficiency")
-            self.pipe.enable_model_cpu_offload()
+            self.pipe.enable_model_cpu_offload(device=device)
             if self.pipe_upsample:
-                self.pipe_upsample.enable_model_cpu_offload()
+                self.pipe_upsample.enable_model_cpu_offload(device=device)
         else:
-            self.logger.info("Moving pipeline to CUDA")
-            self.pipe.to("cuda")
+            self.logger.info(f"Moving pipeline to {device.type}")
+            self.pipe.to(device)
             if self.pipe_upsample:
-                self.logger.info("Moving upsampler pipeline to CUDA")
-                self.pipe_upsample.to("cuda")
+                self.logger.info(f"Moving upsampler pipeline to {device.type}")
+                self.pipe_upsample.to(device)
         # Enable VAE tiling for LTX-Video to save memory
         if self.config.model_type == ModelType.LTX_VIDEO_DEV:
             if hasattr(self.pipe, "vae") and hasattr(self.pipe.vae, "enable_tiling"):

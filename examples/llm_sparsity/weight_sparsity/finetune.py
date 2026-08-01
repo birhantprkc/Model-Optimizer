@@ -40,7 +40,7 @@ from transformers.trainer_utils import get_last_checkpoint
 import modelopt.torch.opt as mto
 import modelopt.torch.utils.distributed as dist
 from modelopt.torch.opt.utils import is_dynamic
-from modelopt.torch.utils import print_rank_0
+from modelopt.torch.utils import print_rank_0, resolve_device
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -310,7 +310,7 @@ def train():
         trust_remote_code=args.trust_remote_code,
         cache_dir=args.cache_dir,
         attn_implementation="flash_attention_2" if model_args.use_flash_attn else "eager",
-    ).to(torch.device("cuda"))
+    ).to(resolve_device("auto"))
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,

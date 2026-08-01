@@ -26,6 +26,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from modelopt.torch._deploy.device_model import DeviceModel
+from modelopt.torch.utils import resolve_device
 
 ACCURACY: Final[str] = "accuracy"
 
@@ -122,7 +123,7 @@ def evaluate(
     evaluation_type: str = ACCURACY,
     batch_size=1,
     num_examples=None,
-    device="cuda",
+    device="auto",
     dataset_path="ILSVRC/imagenet-1k",
     seed=0,
 ):
@@ -134,7 +135,8 @@ def evaluate(
         evaluation_type: Type of evaluation to perform. Currently only accuracy is supported.
         batch_size: Batch size to use for evaluation. Currently only batch_size=1 is supported.
         num_examples: Number of examples to evaluate on. If None, evaluate on the entire dataset.
-        device: Device to run evaluation on. Supported devices: "cpu" and "cuda". Defaults to "cuda".
+        device: PyTorch device to run evaluation on (for example: auto, cpu, cuda, xpu, or mps).
+            Defaults to "auto", which selects the current accelerator and falls back to CPU.
         dataset_path: HF dataset card (e.g. "ILSVRC/imagenet-1k"), local HF mirror with
             data/validation* shards, or local ImageNet root dir containing val.txt and
             a flat validation/ directory. Defaults to "ILSVRC/imagenet-1k".
@@ -171,7 +173,7 @@ def evaluate(
 
 
 def evaluate_accuracy(
-    model, val_loader, num_examples, batch_size, topk=(1,), random_seed=None, device="cuda"
+    model, val_loader, num_examples, batch_size, topk=(1,), random_seed=None, device="auto"
 ):
     """Evaluate the accuracy of the model on the validation dataset.
 
@@ -184,11 +186,13 @@ def evaluate_accuracy(
             example of usage `top1, top5 = evaluate_accuracy(..., topk=(1,5))`
             `top1, top5, top10 = evaluate_accuracy(..., topk=(1,5,10))`
         random_seed: Random seed to use for evaluation.
-        device: Device to run evaluation on. Supported devices: "cpu" and "cuda". Defaults to "cuda".
+        device: PyTorch device to run evaluation on (for example: auto, cpu, cuda, xpu, or mps).
+            Defaults to "auto", which selects the current accelerator and falls back to CPU.
 
     Returns:
         The accuracy of the model on the validation dataset.
     """
+    device = resolve_device(device)
 
     if random_seed is not None:
         torch.manual_seed(random_seed)

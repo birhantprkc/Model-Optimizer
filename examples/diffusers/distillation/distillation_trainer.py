@@ -51,6 +51,15 @@ from torch import Tensor
 
 import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
+from modelopt.torch.utils import (
+    accelerator_empty_cache,
+    get_accelerator_device_count,
+    get_accelerator_memory_stats,
+    is_accelerator_device,
+    resolve_device,
+    set_accelerator_device,
+    with_device_index,
+)
 
 warnings.warn(
     "LTX-2 packages (ltx-core, ltx-pipelines, ltx-trainer) are provided by Lightricks and are "
@@ -409,7 +418,8 @@ class DistillationTrainer(LtxvTrainer):
         # required for FSDP2 compatibility. This also works fine with FSDP1.
 
         # Log GPU memory usage
-        vram_usage_gb = torch.cuda.memory_allocated() / 1024**3
+        memory_stats = get_accelerator_memory_stats(self._accelerator.device)
+        vram_usage_gb = memory_stats["allocated"] / 1024**3
         logger.debug(f"GPU memory usage after models preparation: {vram_usage_gb:.2f} GB")
 
     def _load_text_encoder_and_cache_embeddings(self):
@@ -432,10 +442,11 @@ class DistillationTrainer(LtxvTrainer):
         # with our addition in the middle.
 
         logger.debug("Loading text encoder...")
+        device = resolve_device("auto")
         self._text_encoder = load_text_encoder(
             checkpoint_path=self._config.model.model_path,
             gemma_model_path=self._config.model.text_encoder_path,
-            device="cuda",
+            device=device,
             dtype=torch.bfloat16,
             load_in_8bit=self._config.acceleration.load_text_encoder_in_8bit,
         )
@@ -512,7 +523,7 @@ class DistillationTrainer(LtxvTrainer):
         self._text_encoder.tokenizer = None
         self._text_encoder.feature_extractor_linear = None
         gc.collect()
-        torch.cuda.empty_cache()
+        accelerator_empty_cache(device)
         logger.debug("Validation/calibration prompt embeddings cached. Gemma model unloaded")
 
         return cached_validation
@@ -532,7 +543,7 @@ class DistillationTrainer(LtxvTrainer):
         if self._distillation_config.quant_cfg is not None:
             self._apply_modelopt_quantization()
             gc.collect()
-            torch.cuda.empty_cache()
+            accelerator_empty_cache()
             logger.info(f"Quantized model: {self._transformer}")
 
     def _needs_fresh_calibration(self) -> bool:
@@ -790,7 +801,7 @@ class DistillationTrainer(LtxvTrainer):
             vocoder=None,
         )
 
-        device = "cuda"
+        device = resolve_device("auto")
         model.eval()
 
         with torch.no_grad():
@@ -863,8 +874,9 @@ class DistillationTrainer(LtxvTrainer):
             self._lr_scheduler = None
 
         # Log memory after preparation
-        if torch.cuda.is_available():
-            mem_gb = torch.cuda.memory_allocated() / 1024**3
+        if is_accelerator_device(self._accelerator.device):
+            memory_stats = get_accelerator_memory_stats(self._accelerator.device)
+            mem_gb = memory_stats["allocated"] / 1024**3
             logger.info(f"GPU memory after model+optimizer preparation: {mem_gb:.2f} GB")
 
     def _init_dataloader(self) -> None:
@@ -955,8 +967,9 @@ class DistillationTrainer(LtxvTrainer):
         self._teacher_transformer.eval()
 
         # Log memory after teacher loading
-        if torch.cuda.is_available():
-            mem_gb = torch.cuda.memory_allocated() / 1024**3
+        if is_accelerator_device(self._accelerator.device):
+            memory_stats = get_accelerator_memory_stats(self._accelerator.device)
+            mem_gb = memory_stats["allocated"] / 1024**3
             logger.info(f"GPU memory after teacher preparation: {mem_gb:.2f} GB")
 
         logger.info(
@@ -1750,14 +1763,14 @@ def parse_args():
 
 def main():
     """Main entry point for distillation training."""
-    # CRITICAL: Set CUDA device BEFORE any model loading.
+    # CRITICAL: Set the accelerator device BEFORE any model loading.
     #
     # The LTX trainer loads the text encoder in __init__ BEFORE _setup_accelerator(),
-    # using device="cuda" which defaults to GPU 0. We must set the device early
-    # so that "cuda" maps to the correct GPU for each process.
+    # using a device which defaults to index 0. We must set the device early
+    # so that the resolved device maps to the correct accelerator for each process.
     #
     # Note: We do NOT call init_process_group() here - let accelerate handle that.
-    # We only set the CUDA device based on LOCAL_RANK.
+    # We only set the accelerator device based on LOCAL_RANK.
 
     # Read distributed environment variables (set by accelerate launch / torchrun)
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -1771,16 +1784,15 @@ def main():
         f"[DEBUG] PID={os.getpid()} RANK={rank} LOCAL_RANK={local_rank} "
         f"WORLD_SIZE={world_size} MASTER_ADDR={master_addr} MASTER_PORT={master_port}"
     )
-    print(f"[DEBUG] torch.cuda.device_count()={torch.cuda.device_count()}")
+    device_count = get_accelerator_device_count()
+    print(f"[DEBUG] accelerator device_count={device_count}")
 
-    # Set CUDA device based on LOCAL_RANK - this ensures device="cuda" uses correct GPU
-    if torch.cuda.is_available() and local_rank < torch.cuda.device_count():
-        torch.cuda.set_device(local_rank)
-        print(
-            f"[DEBUG] Set CUDA device to {local_rank}, current device: {torch.cuda.current_device()}"
-        )
+    # Set accelerator device based on LOCAL_RANK - this ensures the default device is correct
+    if is_accelerator_device() and local_rank < device_count:
+        device = set_accelerator_device(with_device_index("auto", local_rank))
+        print(f"[DEBUG] Set accelerator device to {device}")
     else:
-        print(f"[WARNING] LOCAL_RANK={local_rank} but device_count={torch.cuda.device_count()}")
+        print(f"[WARNING] LOCAL_RANK={local_rank} but device_count={device_count}")
 
     logger.info(f"Process RANK={rank}, LOCAL_RANK={local_rank}, WORLD_SIZE={world_size}")
 

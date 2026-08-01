@@ -24,6 +24,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, Mxfp4Config
 from utils import get_original_huggingface_quant_method
 
 from modelopt.torch.quantization.qtensor import MXFP4QTensor
+from modelopt.torch.utils import accelerator_empty_cache
 
 
 def _to_oai_mxfp4_weight_only(model, block_size=32):
@@ -52,7 +53,7 @@ def _to_oai_mxfp4_weight_only(model, block_size=32):
             )
             # Free GPU memory immediately after processing each parameter
             del param, quantized, scales
-            torch.cuda.empty_cache()
+            accelerator_empty_cache()
             gc.collect()
         else:
             new_state_dict[name] = param
@@ -137,7 +138,7 @@ if __name__ == "__main__":
     if args.lora_path:
         model = PeftModel.from_pretrained(model, args.lora_path)
         model = model.merge_and_unload()  # Merge LoRA-QAT adapter weights to base model
-        torch.cuda.empty_cache()
+        accelerator_empty_cache()
         gc.collect()
 
     # Load tokenizer

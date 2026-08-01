@@ -24,7 +24,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, P
 
 import modelopt.torch.opt as mto
 import modelopt.torch.sparsity as mts
-from modelopt.torch.utils import get_dataset_dataloader
+from modelopt.torch.utils import get_dataset_dataloader, resolve_device
 
 DEFAULT_PAD_TOKEN = "[PAD]"
 
@@ -111,7 +111,7 @@ def main(args):
         batch_size=args.batch_size,
         num_samples=args.calib_size,
         max_sample_length=args.model_max_length,
-        device=args.device,
+        device=resolve_device(args.device),
     )
 
     # Sparsify the model
@@ -137,7 +137,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_name_or_path", help="Specify where the PyTorch checkpoint path is", required=True
     )
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help=(
+            "PyTorch device used for calibration (for example: auto, cpu, cuda, xpu, or mps). "
+            "The default selects the current accelerator and falls back to CPU."
+        ),
+    )
     parser.add_argument(
         "--dataset",
         default="cnn_dailymail",

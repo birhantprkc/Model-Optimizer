@@ -32,6 +32,8 @@ from peft import PeftModel
 from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
 import modelopt.torch.puzzletron as mtpz
+from modelopt.torch.utils import is_accelerator_device, resolve_device
+from modelopt.torch.utils.distributed import collective_device
 
 try:
     from pytriton.decorators import batch
@@ -164,11 +166,15 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
                 self.model = PeftModel.from_pretrained(self.model, self.hf_peft_model_id_path)
         else:
             raise ValueError(f"Task {self.task} is not supported.")
-        num_gpus = torch.cuda.device_count()
+        device = resolve_device("auto")
         # If there is only one GPU, move the model to GPU. If you are using device_map as "auto" or "balanced",
         # the model will be moved to GPU automatically.
-        if device_map is None and num_gpus >= 1 and self.model.device.type != "cuda":
-            self.model.cuda()
+        if (
+            device_map is None
+            and is_accelerator_device(device)
+            and self.model.device.type != device.type
+        ):
+            self.model.to(device)
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.tokenizer_id_path,
             trust_remote_code=hf_kwargs.pop("trust_remote_code", False),
@@ -234,7 +240,7 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
         kwargs = {**inputs, **kwargs}
         for key, val in kwargs.items():
             if torch.is_tensor(val):
-                kwargs[key] = val.cuda()
+                kwargs[key] = val.to(self.model.device)
 
         with torch.no_grad():
             generated_ids = self.model.generate(**kwargs)
@@ -290,7 +296,7 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
     def generate_other_ranks(self):
         """Generate function for ranks other than the rank 0."""
         while True:
-            message = torch.empty(1, dtype=torch.long, device="cuda")
+            message = torch.empty(1, dtype=torch.long, device=collective_device())
             torch.distributed.broadcast(message, src=0)
             if message == 0:
                 prompts = broadcast_list(data=[None], src=0)
@@ -369,7 +375,7 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
             if torch.distributed.is_initialized():
                 if torch.distributed.get_world_size() > 1:
                     torch.distributed.broadcast(
-                        torch.tensor([0], dtype=torch.long, device="cuda"), src=0
+                        torch.tensor([0], dtype=torch.long, device=collective_device()), src=0
                     )
                     broadcast_list(prompts, src=0)
                     broadcast_list(
@@ -470,7 +476,7 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
             # Move to same device as model
             for key, val in prompt_inputs.items():
                 if torch.is_tensor(val):
-                    prompt_inputs[key] = val.cuda()
+                    prompt_inputs[key] = val.to(self.model.device)
 
         # Process each sample
         log_probs_list = []
@@ -685,7 +691,7 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
         if torch.distributed.is_initialized():
             if torch.distributed.get_world_size() > 1:
                 torch.distributed.broadcast(
-                    torch.tensor([0], dtype=torch.long, device="cuda"), src=0
+                    torch.tensor([0], dtype=torch.long, device=collective_device()), src=0
                 )
                 broadcast_list(prompts, src=0)
                 broadcast_list(

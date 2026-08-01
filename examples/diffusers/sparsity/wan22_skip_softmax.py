@@ -61,6 +61,7 @@ from diffusers.utils import export_to_video
 import modelopt.torch.sparsity.attention_sparsity as mtsa
 from modelopt.torch.export import export_hf_checkpoint
 from modelopt.torch.sparsity.attention_sparsity.sparse_attention import SparseAttentionModule
+from modelopt.torch.utils import accelerator_empty_cache, resolve_device
 
 DEFAULT_MODEL_PATH = os.environ.get("WAN22_MODEL_PATH", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 
@@ -221,11 +222,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_pipeline(model_path: str) -> WanPipeline:
+def build_pipeline(model_path: str, device: torch.device) -> WanPipeline:
     """Build the Wan 2.2 text-to-video pipeline."""
     vae = AutoencoderKLWan.from_pretrained(model_path, subfolder="vae", torch_dtype=torch.float32)
     pipe = WanPipeline.from_pretrained(model_path, vae=vae, torch_dtype=torch.bfloat16)
-    pipe.to("cuda")
+    pipe.to(device)
     return pipe
 
 
@@ -290,6 +291,7 @@ def load_calib_prompts(calib_size: int) -> list[str]:
 
 def build_calibration_forward_loop(
     pipe: WanPipeline,
+    device: torch.device,
     calib_size: int = 4,
     num_steps: int = 40,
     num_frames: int = 151,
@@ -318,7 +320,7 @@ def build_calibration_forward_loop(
                 "width": width,
                 "num_inference_steps": num_steps,
                 "guidance_scale": guidance_scale,
-                "generator": torch.Generator(device="cuda").manual_seed(seed),
+                "generator": torch.Generator(device=device).manual_seed(seed),
             }
             if guidance_scale_2 is not None:
                 kw["guidance_scale_2"] = guidance_scale_2
@@ -404,9 +406,11 @@ def _get_num_blocks(transformer: torch.nn.Module) -> int:
 def main() -> None:
     args = parse_args()
 
+    device = resolve_device("auto")
+
     # ---- Build pipeline ----
     print(f"Loading Wan 2.2 from {args.model_path}...")
-    pipe = build_pipeline(args.model_path)
+    pipe = build_pipeline(args.model_path, device)
 
     # ---- Collect transformers ----
     # Wan 2.2 5B has one transformer; 14B has two (transformer + transformer_2)
@@ -441,6 +445,7 @@ def main() -> None:
             calib_frames = args.calib_frames if args.calib_frames is not None else args.num_frames
             forward_loop = build_calibration_forward_loop(
                 pipe,
+                device,
                 calib_size=args.calib_size,
                 num_steps=args.calib_steps,
                 num_frames=calib_frames,
@@ -466,8 +471,8 @@ def main() -> None:
     # ---- Free calibration memory before inference ----
     if not args.baseline and not args.triton_baseline and forward_loop is not None:
         gc.collect()
-        torch.cuda.empty_cache()
-        print("Cleared CUDA cache after calibration")
+        accelerator_empty_cache(device)
+        print("Cleared accelerator cache after calibration")
 
     # ---- Export (optional) ----
     if args.export_dir and not args.baseline:
@@ -490,7 +495,7 @@ def main() -> None:
             "width": args.width,
             "num_inference_steps": args.num_steps,
             "guidance_scale": args.guidance_scale,
-            "generator": torch.Generator(device="cuda").manual_seed(args.seed),
+            "generator": torch.Generator(device=device).manual_seed(args.seed),
         }
         if is_14b and args.guidance_scale_2 is not None:
             pipe_kwargs["guidance_scale_2"] = args.guidance_scale_2

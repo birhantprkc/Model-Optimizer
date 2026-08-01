@@ -56,6 +56,8 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Sampler
 
+from modelopt.torch.utils.distributed import collective_device
+
 
 class Summary(Enum):
     NONE = 0
@@ -88,8 +90,9 @@ class AverageMeter:
     def all_reduce(self) -> None:
         if not dist.is_available() or not dist.is_initialized():
             return
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        total = torch.tensor([self.sum, self.count], dtype=torch.float32, device=device)
+        total = torch.tensor(
+            [self.sum, self.count], dtype=torch.float32, device=collective_device()
+        )
         dist.all_reduce(total, dist.ReduceOp.SUM, async_op=False)
         self.sum, self.count = total.tolist()
         self.avg = self.sum / self.count if self.count != 0 else 0.0
@@ -174,12 +177,13 @@ def train(
     if args.multi_gpu and hasattr(train_loader, "sampler") and train_loader.sampler is not None:
         train_loader.sampler.set_epoch(epoch)
 
+    device = next(model.parameters()).device
     end = time.time()
     for i, (images, target) in enumerate(train_loader):
         data_time.update(time.time() - end)
 
-        images = images.cuda(args.gpu, non_blocking=True)
-        target = target.cuda(args.gpu, non_blocking=True)
+        images = images.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)
 
         output = model(images)
         loss = criterion(output, target)
@@ -227,11 +231,12 @@ def validate(
     progress = ProgressMeter(total_batches, [batch_time, losses, top1, top5], prefix="Test: ")
 
     model.eval()
+    device = next(model.parameters()).device
     with torch.no_grad():
         end = time.time()
         for i, (images, target) in enumerate(val_loader):
-            images = images.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
+            images = images.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
 
             output = model(images)
             loss = criterion(output, target)

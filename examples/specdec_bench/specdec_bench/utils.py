@@ -113,8 +113,12 @@ def _get_gpu_name():
     try:
         import torch
 
-        if torch.cuda.is_available():
-            return torch.cuda.get_device_name(0)
+        accelerator = torch.accelerator.current_accelerator(check_available=True)
+        if accelerator is not None:
+            get_device_name = getattr(torch.get_device_module(accelerator), "get_device_name", None)
+            if callable(get_device_name):
+                return get_device_name(0)
+            return accelerator.type
     except Exception:
         pass
     return None

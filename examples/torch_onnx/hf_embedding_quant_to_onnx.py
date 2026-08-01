@@ -37,6 +37,7 @@ import modelopt.torch.quantization as mtq
 from modelopt.recipe import load_recipe
 from modelopt.torch._deploy.utils import OnnxBytes, get_onnx_bytes_and_metadata
 from modelopt.torch.quantization.export_onnx import scaled_dot_product_attention
+from modelopt.torch.utils import resolve_device
 
 __all__ = [
     "EmbeddingModel",
@@ -239,7 +240,7 @@ def main():
     )
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device("auto")
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_path, trust_remote_code=args.trust_remote_code
     )

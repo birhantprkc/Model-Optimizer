@@ -30,7 +30,7 @@ from utils import get_train_loader_and_sampler, get_val_loader_and_sampler, trai
 
 import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
-from modelopt.torch.utils import print_rank_0
+from modelopt.torch.utils import get_accelerator_device_count, print_rank_0, set_accelerator_device
 
 # Suppress known ModelOpt PTQ warnings
 warnings.filterwarnings(
@@ -80,7 +80,10 @@ def parse_args() -> argparse.Namespace:
         help="URL for DDP initialization, used if not using torchrun or for custom multi-node setups",
     )
     parser.add_argument(
-        "--dist-backend", type=str, default="nccl", help="Distributed backend (e.g., nccl, gloo)"
+        "--dist-backend",
+        type=str,
+        default=None,
+        help="Distributed backend (e.g., nccl, gloo); defaults to the device's default backend",
     )
     parser.add_argument("--print-freq", type=int, default=100, help="Print frequency")
     parser.add_argument(
@@ -96,9 +99,9 @@ def main() -> None:
     args = parse_args()
 
     # Number of GPUs
-    ngpus = torch.cuda.device_count()
+    ngpus = get_accelerator_device_count()
     if ngpus == 0:
-        raise RuntimeError("No CUDA devices found. At least one GPU is required.")
+        raise RuntimeError("No accelerator devices found. At least one accelerator is required.")
 
     # Detect torchrun environment
     is_torchrun = "LOCAL_RANK" in os.environ
@@ -128,21 +131,21 @@ def main() -> None:
 
 def main_worker(args: argparse.Namespace) -> None:
     # Setup device
-    torch.cuda.set_device(args.gpu)
-    torch.cuda.manual_seed_all(args.seed + args.gpu)
+    device = set_accelerator_device(args.gpu)
+    torch.manual_seed(args.seed + args.gpu)
 
     # Initialize DDP if multi-gpu
     if args.multi_gpu:
         dist.init_process_group(
-            backend=args.dist_backend,
+            backend=args.dist_backend or dist.get_default_backend_for_device(device),
             init_method=(None if "LOCAL_RANK" in os.environ else args.dist_url),
             world_size=args.world_size,
             rank=args.rank,
         )
 
     # Load model and initialize loss
-    model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1).cuda(args.gpu)
-    criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+    model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1).to(device)
+    criterion = nn.CrossEntropyLoss().to(device)
 
     # Validation loaders: one for calibration (0 workers), one for eval
     val_calib_loader, _ = get_val_loader_and_sampler(args, num_workers=0)
@@ -162,7 +165,7 @@ def main_worker(args: argparse.Namespace) -> None:
         seen = 0
         with torch.no_grad():
             for images, _ in val_calib_loader:
-                m(images.cuda(args.gpu, non_blocking=True))
+                m(images.to(device, non_blocking=True))
                 seen += images.size(0)
                 if seen >= 512:
                     break

@@ -95,7 +95,10 @@ class SpecBenchMedusaModel(Model):
 
         # Load the Medusa model
         # Use single GPU to avoid device mismatch issues with device_map="auto"
-        self.device = torch.device(kwargs.get("device", "cuda:0"))
+        device = kwargs.get("device")
+        if device is None:
+            device = torch.accelerator.current_accelerator(check_available=True) or "cpu"
+        self.device = torch.device(device)
         self.model = MedusaModel.from_pretrained(
             self.draft_model_path,
             model_dir,
@@ -281,4 +284,7 @@ class SpecBenchMedusaModel(Model):
         # Move model to CPU or delete to free GPU memory
         if hasattr(self, "model") and self.model is not None:
             del self.model
-            torch.cuda.empty_cache()
+            if self.device.type != "cpu":
+                empty_cache = getattr(torch.get_device_module(self.device), "empty_cache", None)
+                if callable(empty_cache):
+                    empty_cache()

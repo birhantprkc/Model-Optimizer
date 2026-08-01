@@ -26,6 +26,8 @@ from typing import Any
 
 import torch
 
+from modelopt.torch.utils import accelerator_empty_cache
+
 from .base import BaseModelProcessor
 from .registry import ProcessorRegistry
 
@@ -88,7 +90,7 @@ class QwenImageProcessor(BaseModelProcessor):
         # chat template, and system-token dropping logic.
         models["pipeline"] = pipeline
 
-        torch.cuda.empty_cache()
+        accelerator_empty_cache()
 
         logger.info("[Qwen-Image] Models loaded successfully!")
         return models

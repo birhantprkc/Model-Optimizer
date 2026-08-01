@@ -55,6 +55,7 @@ from utils import check_conv_and_mha, check_lora
 import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
 from modelopt.torch.export import export_hf_checkpoint
+from modelopt.torch.utils import accelerator_empty_cache, resolve_device
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -345,9 +346,10 @@ class ExportManager:
             )
             generate_fp8_scales(backbone)
         self.logger.info("Preparing models for export...")
+        device = resolve_device("auto")
         pipe.to("cpu")
-        torch.cuda.empty_cache()
-        backbone.to("cuda")
+        accelerator_empty_cache(device)
+        backbone.to(device)
         # Export to ONNX
         backbone.eval()
         with torch.no_grad():

@@ -34,6 +34,7 @@ from modelopt.torch.sparsity.attention_sparsity.config import (
     SKIP_SOFTMAX_TRITON_CALIB,
     SPARSE_SOFTMAX_DEFAULT,
 )
+from modelopt.torch.utils import is_accelerator_device, resolve_device
 from modelopt.torch.utils.memory_monitor import launch_memory_monitor
 
 RAND_SEED = 1234
@@ -118,33 +119,32 @@ def generate_sample_output(model, tokenizer, args):
         truncation=True,
         padding=False,
     )
-    if torch.cuda.is_available():
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-        # Generate
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=args.max_new_tokens,
-                do_sample=args.do_sample,
-                temperature=args.temperature if args.do_sample else 1.0,
-                pad_token_id=tokenizer.pad_token_id,
-            )
-            input_length = inputs["input_ids"].shape[1]
-            generated_ids = outputs[0][input_length:]
-        generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    # Generate
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=args.max_new_tokens,
+            do_sample=args.do_sample,
+            temperature=args.temperature if args.do_sample else 1.0,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+        input_length = inputs["input_ids"].shape[1]
+        generated_ids = outputs[0][input_length:]
+    generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
     return generated_text, truncated_prompt, inputs["input_ids"]
 
 
 def main(args):
     """Main function to run the selected mode."""
-    if not torch.cuda.is_available():
-        raise OSError("GPU is required for inference.")
+    device = resolve_device("auto")
 
     random.seed(RAND_SEED)
     np.random.seed(RAND_SEED)
-    launch_memory_monitor()
+    if is_accelerator_device(device):
+        launch_memory_monitor(device=device)
 
     print(f"Loading model: {args.pyt_ckpt_path}")
 

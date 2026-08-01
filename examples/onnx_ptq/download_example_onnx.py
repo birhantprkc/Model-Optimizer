@@ -20,6 +20,7 @@ import timm
 import torch
 
 from modelopt.torch._deploy.utils import OnnxBytes, get_onnx_bytes_and_metadata
+from modelopt.torch.utils import resolve_device
 
 
 def export_to_onnx(model, input_shape, onnx_save_path, device, weights_dtype="fp32"):
@@ -66,7 +67,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device("auto")
     model = timm.create_model(args.timm_model_name, pretrained=True, num_classes=1000).to(device)
     data_config = timm.data.resolve_model_data_config(model)
     input_shape = (args.batch_size,) + data_config["input_size"]

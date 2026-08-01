@@ -34,7 +34,7 @@ from modelopt.torch.speculative.eagle.utils import (
     OfflineSupervisedDataset,
 )
 from modelopt.torch.speculative.utils import get_ttt_msk_func
-from modelopt.torch.utils import print_rank_0
+from modelopt.torch.utils import accelerator_empty_cache, print_rank_0, resolve_device
 from modelopt.torch.utils.distributed import is_master
 from modelopt.torch.utils.plugins.transformers_dataset import (
     LanguageDataCollator,
@@ -419,7 +419,7 @@ class EagleTrainingPlot(TrainerCallback):
             return control
         if state.global_step % self.ar_validate_steps == 0 and state.global_step > 0:
             print_rank_0("Running AR validation...")
-            torch.cuda.empty_cache()
+            accelerator_empty_cache()
             try:
                 ars = validate_ar(
                     model=kwargs["model"],
@@ -464,7 +464,7 @@ def get_patched_templated_ring_attn(orig_templated_attn: Callable):
                         [x, x,  0, 0]]
 
         """
-        device = torch.cuda.current_device()
+        device = resolve_device("auto")
         q_indices = torch.arange(q_len * rank, q_len * (rank + 1), device=device)
         kv_indices = (
             torch.arange(q_len * size * (ttt_step + 1), device=device)

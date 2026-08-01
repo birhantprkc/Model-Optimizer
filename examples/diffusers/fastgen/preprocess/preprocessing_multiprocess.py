@@ -57,6 +57,8 @@ from nemo_automodel.components.datasets.diffusion.multi_tier_bucketing import (
 from PIL import Image
 from tqdm import tqdm
 
+from modelopt.torch.utils import get_accelerator_device_count, resolve_device, with_device_index
+
 from .processors import BaseModelProcessor, ProcessorRegistry, get_caption_loader
 
 logger = logging.getLogger(__name__)
@@ -168,7 +170,8 @@ def _init_worker(processor_name: str, model_name: str, gpu_id: int, max_pixels: 
     # Set CUDA_VISIBLE_DEVICES to isolate this GPU for the worker process.
     # After this, the selected GPU becomes cuda:0 (not cuda:{gpu_id}).
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    _worker_device = "cuda:0"
+    device = resolve_device("auto")
+    _worker_device = "cuda:0" if device.type == "cuda" else str(with_device_index(device, gpu_id))
 
     _worker_processor = ProcessorRegistry.get(processor_name)
     _worker_models = _worker_processor.load_models(model_name, _worker_device)
@@ -343,9 +346,9 @@ def preprocess_dataset(
     if model_name is None:
         model_name = processor.default_model_name
 
-    num_gpus = torch.cuda.device_count()
+    num_gpus = get_accelerator_device_count()
     if num_gpus == 0:
-        raise RuntimeError("No GPUs available")
+        raise RuntimeError("No accelerator devices available")
 
     logger.info("Processor: %s (%s)", processor_name, processor.model_type)
     logger.info("Model: %s", model_name)
@@ -439,7 +442,8 @@ def _init_video_worker(
 
     # Set CUDA_VISIBLE_DEVICES to isolate this GPU for the worker process.
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    _worker_device = "cuda:0"
+    device = resolve_device("auto")
+    _worker_device = "cuda:0" if device.type == "cuda" else str(with_device_index(device, gpu_id))
     _worker_config = video_config
 
     _worker_processor = ProcessorRegistry.get(processor_name)
@@ -956,9 +960,9 @@ def preprocess_video_dataset(
     if not use_bucketing and max_pixels is None:
         max_pixels = target_height * target_width  # Use explicit size as pixel budget
 
-    num_gpus = torch.cuda.device_count()
+    num_gpus = get_accelerator_device_count()
     if num_gpus == 0:
-        raise RuntimeError("No GPUs available")
+        raise RuntimeError("No accelerator devices available")
 
     logger.info("Processor: %s (%s)", processor_name, processor.model_type)
     logger.info("Model: %s", model_name)

@@ -37,6 +37,7 @@ import modelopt.torch.quantization as mtq
 from modelopt.recipe import load_config
 from modelopt.recipe.presets import MODEL_QUANT_PRESET_DIR
 from modelopt.torch.quantization.config import QuantizeConfig
+from modelopt.torch.utils import resolve_device
 
 """
 Quantize a timm vision model and export to ONNX for TensorRT deployment.
@@ -548,7 +549,7 @@ def main():
         )
 
     # Create model and move to appropriate device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device("auto")
     model_kwargs = json.loads(args.model_kwargs) if args.model_kwargs else {}
     model = timm.create_model(
         args.timm_model_name,

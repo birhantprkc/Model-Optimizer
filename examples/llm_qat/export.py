@@ -25,7 +25,7 @@ from modelopt.torch.export.convert_hf_config import convert_hf_quant_config_form
 from modelopt.torch.export.unified_export_hf import _export_transformers_checkpoint
 from modelopt.torch.opt.conversion import restore_from_modelopt_state
 from modelopt.torch.quantization.utils import set_quantizer_state_dict
-from modelopt.torch.utils import print_rank_0
+from modelopt.torch.utils import print_rank_0, resolve_device
 
 RAND_SEED = 1234
 
@@ -35,14 +35,16 @@ mto.enable_huggingface_checkpointing()
 
 def get_model(
     ckpt_path: str,
-    device="cuda",
+    device="auto",
 ):
     """
     Loads a QLoRA model that has been trained using modelopt trainer.
     """
     # TODO: Add support for merging adapters in BF16 and merging adapters with quantization for deployment
+    device = resolve_device(device)
+
     device_map = "auto"
-    if device == "cpu":
+    if device.type == "cpu":
         device_map = "cpu"
 
     # Load model
@@ -123,7 +125,14 @@ if __name__ == "__main__":
         required=True,
     )
 
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help=(
+            "PyTorch device used to load the model (for example: auto, cpu, cuda, xpu, or mps). "
+            "The default selects the current accelerator and falls back to CPU."
+        ),
+    )
 
     parser.add_argument(
         "--export_path",

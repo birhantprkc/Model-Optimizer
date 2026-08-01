@@ -41,6 +41,7 @@ from transformers import AutoProcessor, AutoTokenizer
 import modelopt.torch.opt as mto
 import modelopt.torch.quantization as mtq
 from modelopt.torch.export.quant_utils import get_quant_config
+from modelopt.torch.utils import resolve_device, with_device_index
 from modelopt.torch.utils.dataset_utils import create_forward_loop, get_dataset_dataloader
 
 MIN_PIXELS = 163840
@@ -296,7 +297,7 @@ def make_joint_calibration_forward_loop(
                 }
                 model_inputs = to_device(model_inputs, device)
 
-                with torch.autocast("cuda", dtype=torch.float16):
+                with torch.autocast(torch.device(device).type, dtype=torch.float16):
                     runtime_model.sample_trajectories_from_data_with_vlm_rollout(
                         data=model_inputs,
                         top_p=top_p,
@@ -359,7 +360,7 @@ def quantize_model(model, args, tokenizer=None, calibration_forward_loop=None):
             tokenizer=tokenizer,
             batch_size=32,
             num_samples=512,
-            device="cuda:0",
+            device=with_device_index("auto", 0),
         )
         calibrate_loop = create_forward_loop(dataloader=calib_dataloader)
     else:
@@ -455,7 +456,7 @@ def auto_quantize_model(
     data_loader = _ReusableLoader()
 
     def forward_step(runtime_model, data):
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast(torch.device(device).type, dtype=torch.bfloat16):
             out = runtime_model.teacher_forced_flow_loss_forward(data=data)
         v_pred, v_target = out["v_pred"], out["v_target"]
         print(
@@ -569,7 +570,7 @@ def main():
     # checkpoint (and restored when AlpamayoR1.from_pretrained later loads the quantized weights).
     mto.enable_huggingface_checkpointing()
 
-    device = "cuda"
+    device = resolve_device("auto")
     print(f"Loading model from {args.ckpt!r} ...")
     model = AlpamayoR1.from_pretrained(args.ckpt, dtype=torch.float16).to(
         device=device, dtype=torch.float16
