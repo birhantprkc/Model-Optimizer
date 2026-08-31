@@ -28,9 +28,10 @@ These instructions apply to AI-assisted work in this repository.
 - **Running pre-commit:** Follow the
   [pre-commit hook instructions](CONTRIBUTING.md#pre-commit-hooks). Hooks may
   modify files; review and re-stage those changes before committing.
-- **Signed commit:** Use `git commit -s -S -m "<message>"` for commits so they
-  follow the [signing your work](CONTRIBUTING.md#-signing-your-work)
-  requirements.
+- **Signed commit:** Use `git commit -s -m "<message>"` for commits so they
+  carry the DCO sign-off per
+  [signing your work](CONTRIBUTING.md#-signing-your-work). GPG signing (`-S`)
+  is not required in this fork.
 - **Never `git push` without explicit approval in the current turn.** Commit
   locally is fine; publishing to a remote is not.
 - After `git commit`, stop and wait for the user to say "push", "publish",
