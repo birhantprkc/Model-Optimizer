@@ -25,15 +25,16 @@ import contextlib
 import os
 
 import torch
-from _distillation_provider import convert_to_distillation_provider
 from export_distilled_megatron_to_hf import export_llm_to_hf, save_vlm_to_hf
 from megatron.bridge import AutoBridge
+from megatron.bridge.models.distillation_provider import convert_to_distillation_provider
 from megatron.bridge.recipes.utils.optimizer_utils import (
     distributed_fused_adam_with_cosine_annealing,
 )
 from megatron.bridge.training.config import (
     CheckpointConfig,
     ConfigContainer,
+    FinetuningDatasetConfig,
     GPTDatasetConfig,
     LoggerConfig,
     MockGPTDatasetConfig,
@@ -45,10 +46,11 @@ from megatron.bridge.training.config import (
 from megatron.bridge.training.distill import distill
 from megatron.bridge.training.post_training.checkpointing import has_modelopt_state
 from megatron.bridge.training.post_training.distillation import ModelOptDistillConfig
+from megatron.bridge.utils.vocab_utils import calculate_padded_vocab_size
 from megatron.core.datasets.utils import get_blend_from_list
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.utils import unwrap_model
-from transformers import AutoConfig
+from transformers import AutoConfig, AutoTokenizer
 
 import modelopt.torch.distill as mtd
 import modelopt.torch.utils.distributed as dist
@@ -57,6 +59,20 @@ from modelopt.torch.utils.plugins.mbridge import load_modelopt_megatron_checkpoi
 
 with contextlib.suppress(ModuleNotFoundError):
     import modelopt.torch.puzzletron.plugins.mbridge  # noqa: F401
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
 
 
 def get_args():
@@ -111,6 +127,20 @@ def get_args():
     parser.add_argument(
         "--use_mock_data", action="store_true", help="Use mock data instead of --data_paths"
     )
+    parser.add_argument(
+        "--sft",
+        action="store_true",
+        help="Distill on prompt-completion jsonl from --sft_dataset_root with the loss masked to "
+        "the completion, instead of pre-tokenized --data_paths.",
+    )
+    parser.add_argument(
+        "--sft_dataset_root",
+        type=str,
+        default=None,
+        help="Directory holding training.jsonl (and validation.jsonl when --eval_iters > 0) of "
+        '{"input": <prompt>, "output": <response>} records (used with --sft). See the README for '
+        "how the fields are tokenized and truncated.",
+    )
     # Training & Eval arguments
     parser.add_argument(
         "--output_dir", type=str, required=True, help="Folder for logging and checkpoint saving"
@@ -162,10 +192,31 @@ def get_args():
         "Allowed: core_attn, mlp, moe, moe_act, layernorm, mla_up_proj, shared_experts.",
     )
     parser.add_argument(
-        "--eval_interval", type=int, default=100, help="Validate + checkpoint every <N> steps"
+        "--eval_interval", type=_positive_int, default=100, help="Validate every <N> steps"
     )
     parser.add_argument(
-        "--eval_iters", type=int, default=32, help="Number of batches per validation stage"
+        "--eval_iters",
+        type=_nonnegative_int,
+        default=32,
+        help="Number of batches per validation stage; set to 0 to disable validation",
+    )
+    parser.add_argument(
+        "--save_interval",
+        type=_positive_int,
+        default=None,
+        help="Checkpoint every <N> steps; defaults to --eval_interval",
+    )
+    parser.add_argument(
+        "--exit_interval",
+        type=_positive_int,
+        default=None,
+        help="Save a checkpoint and exit when the iteration is divisible by this value",
+    )
+    parser.add_argument(
+        "--exit_duration_in_mins",
+        type=_positive_int,
+        default=None,
+        help="Save a checkpoint and exit after this many minutes",
     )
     parser.add_argument(
         "--validate_only",
@@ -211,19 +262,67 @@ def get_args():
     args = parser.parse_args()
 
     # Sanity checks
-    if not args.use_mock_data and not args.data_paths:
+    if not args.sft and not args.use_mock_data and not args.data_paths:
         raise ValueError("Must provide either --data_paths or set --use_mock_data.")
 
     if args.student_hf_model is None:
         args.student_hf_model = args.student_hf_path
     if args.checkpoint_keep_last < -1:
         raise ValueError("--checkpoint_keep_last must be >= -1.")
-    if args.validate_only and (args.eval_interval <= 0 or args.eval_iters <= 0):
-        raise ValueError("--validate_only requires --eval_interval > 0 and --eval_iters > 0.")
+    if args.validate_only and args.eval_iters == 0:
+        raise ValueError("--validate_only requires --eval_iters > 0.")
+
+    if args.sft and not args.sft_dataset_root:
+        raise ValueError(
+            "--sft requires --sft_dataset_root (a directory with training.jsonl, plus "
+            "validation.jsonl when --eval_iters > 0)."
+        )
+    if args.sft and (args.data_paths or args.use_mock_data):
+        raise ValueError(
+            "--sft is mutually exclusive with --data_paths / --use_mock_data: the SFT branch wins "
+            "the dataset selection, so those inputs would be silently ignored."
+        )
+    if args.sft_dataset_root and not args.sft:
+        raise ValueError("--sft_dataset_root requires --sft; without it the SFT path is not used.")
+    if args.sft:
+        # Fail on a mistyped root here rather than after both checkpoints have loaded onto GPUs.
+        required = ["training.jsonl"] + (["validation.jsonl"] if args.eval_iters > 0 else [])
+        absent = [f for f in required if not os.path.isfile(os.path.join(args.sft_dataset_root, f))]
+        if absent:
+            raise ValueError(f"--sft_dataset_root {args.sft_dataset_root} is missing: {absent}.")
+        # Decided once here so it reaches print_args and costs a single tokenizer load.
+        args.sft_add_bos = _tokenizer_prepends_bos(args)
+
+    _check_shared_vocabulary(args)
 
     print_args(args)
 
     return args
+
+
+def _check_shared_vocabulary(args) -> None:
+    """Raise unless teacher and student use the same tokenizer."""
+    _tok = {"trust_remote_code": args.trust_remote_code}
+    student_vocab = AutoTokenizer.from_pretrained(args.student_hf_path, **_tok).get_vocab()
+    teacher_vocab = AutoTokenizer.from_pretrained(args.teacher_hf_path, **_tok).get_vocab()
+    if student_vocab != teacher_vocab:
+        raise ValueError(
+            "Distillation scores the teacher on the student's token ids, so teacher and student "
+            "must use the same tokenizer."
+        )
+
+
+def _tokenizer_prepends_bos(args) -> bool:
+    """True when the student tokenizer prepends a BOS at inference.
+
+    Probes an encode: fast tokenizers prepend via a post-processor that exposes no attribute.
+    """
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.student_hf_path, trust_remote_code=args.trust_remote_code
+    )
+    if not getattr(tokenizer, "bos_token", None):
+        return False
+    return tokenizer("x").input_ids[:1] == [tokenizer.bos_token_id]
 
 
 def main(args: argparse.Namespace):
@@ -244,6 +343,10 @@ def main(args: argparse.Namespace):
         provider.expert_model_parallel_size = args.ep_size
         provider.expert_tensor_parallel_size = 1  # Expert tensor parallelism is not supported
         provider.seq_length = args.seq_length
+        if args.sft:
+            # A response-only loss mask needs per-token reduction to combine across CP ranks.
+            # Must stay in sync with ``average_in_collective=not args.sft`` on the DDP config.
+            provider.calculate_per_token_loss = True
         if args.recompute_granularity is not None:
             provider.recompute_granularity = args.recompute_granularity
             provider.recompute_method = args.recompute_method
@@ -267,14 +370,26 @@ def main(args: argparse.Namespace):
         student_provider.gradient_accumulation_fusion = False
     teacher_provider = _build_model_provider(args.teacher_hf_path)
 
+    # The KD losses compare logits elementwise over the vocab dim, so both output layers must have
+    # the same padded width. A shared tokenizer does not imply it: the HF configs can disagree.
+    padded = {
+        name: calculate_padded_vocab_size(
+            p.vocab_size, p.make_vocab_size_divisible_by, p.tensor_model_parallel_size
+        )
+        for name, p in (("student", student_provider), ("teacher", teacher_provider))
+    }
+    if padded["student"] != padded["teacher"]:
+        raise ValueError(
+            "Distillation needs student and teacher logits of equal width, but their padded vocab "
+            f"sizes differ ({padded['student']} vs {padded['teacher']})."
+        )
+
     kd_config = ModelOptDistillConfig(
         skip_lm_loss=not args.no_skip_lm_loss, kd_loss_scale=args.kd_loss_scale
     )
 
-    # VLM detection convention: HF VLM configs expose a ``vision_config``, and Megatron-Bridge nests
-    # the text model under the ``language_model`` submodule (used as ``distill_submodule`` below). If a
-    # future model breaks either convention, the ``getattr(model, "language_model")`` in the provider
-    # will error loudly rather than silently distilling the wrong module.
+    # HF VLM configs expose ``vision_config``; Megatron-Bridge nests the text model under
+    # ``language_model`` (used as ``distill_submodule`` below).
     is_vlm = hasattr(
         AutoConfig.from_pretrained(args.student_hf_path, trust_remote_code=args.trust_remote_code),
         "vision_config",
@@ -333,7 +448,33 @@ def main(args: argparse.Namespace):
         "dataloader_type": "single",
         "skip_getting_attention_mask_from_dataset": True,
     }
-    if args.use_mock_data:
+    if args.sft:
+        # SFT-masked distillation via Bridge's FinetuningDatasetConfig -> NeMo-style GPTSFTDataset,
+        # reading {"input", "output"} jsonl. Fields are tokenized as written except that each is
+        # ``.strip(" ")``-ed; see --sft_dataset_root help.
+        dataset_config = FinetuningDatasetConfig(
+            seq_length=args.seq_length,
+            dataset_root=args.sft_dataset_root,
+            seed=args.seed,
+            dataloader_type="batch",
+            # Honour --eval_iters 0 so a training-only dataset_root does not have to carry a
+            # dummy validation.jsonl just to satisfy the builder.
+            do_validation=args.eval_iters > 0,
+            do_test=False,
+            dataset_kwargs={
+                "prompt_template": "{input}{output}",
+                "label_key": "output",
+                "truncation_field": "input",
+                # Drop the oldest context. The default "right" would cut the prompt/answer
+                # boundary and then "output" itself, the only span the loss is computed on.
+                "truncation_method": "left",
+                "answer_only_loss": True,
+                # Prepended after truncation, so it survives a record that had to be cut.
+                "add_bos": args.sft_add_bos,
+                "add_eos": True,
+            },
+        )
+    elif args.use_mock_data:
         dataset_config = MockGPTDatasetConfig(**dataset_kwargs)
     else:
         # Convert flat CLI list (e.g. ["1.0", "/path/data"]) to Megatron blend format
@@ -347,6 +488,8 @@ def main(args: argparse.Namespace):
             train_iters=args.train_iters,
             global_batch_size=args.gbs,
             micro_batch_size=args.mbs,
+            exit_interval=args.exit_interval,
+            exit_duration_in_mins=args.exit_duration_in_mins,
             manual_gc=True,
             manual_gc_interval=100,
         ),
@@ -362,7 +505,7 @@ def main(args: argparse.Namespace):
             grad_reduce_in_fp32=True,
             overlap_grad_reduce=True,
             overlap_param_gather=True,
-            average_in_collective=True,
+            average_in_collective=not args.sft,  # per-token loss must not be pre-averaged
             use_distributed_optimizer=True,
         ),
         dataset=dataset_config,
@@ -375,11 +518,29 @@ def main(args: argparse.Namespace):
             wandb_entity=args.wandb_entity,  # optional
             wandb_exp_name=args.wandb_exp_name,
         ),
-        tokenizer=TokenizerConfig(
-            tokenizer_type="NullTokenizer", vocab_size=distill_provider.vocab_size
+        tokenizer=(
+            # SFT reads raw text, so it needs the model's real tokenizer; the pretraining path
+            # consumes pre-tokenized data and keeps NullTokenizer.
+            TokenizerConfig(
+                tokenizer_type="HuggingFaceTokenizer",
+                tokenizer_model=args.student_hf_path,
+                hf_tokenizer_kwargs={
+                    "trust_remote_code": args.trust_remote_code,
+                    # Default True would make text_to_ids inject a BOS at the answer boundary,
+                    # since "{input}" and "{output}" are tokenized separately. Consumed by Bridge
+                    # in training/tokenizers/config.py.
+                    "include_special_tokens": False,
+                },
+            )
+            if args.sft
+            else TokenizerConfig(
+                tokenizer_type="NullTokenizer", vocab_size=distill_provider.vocab_size
+            )
         ),
         checkpoint=CheckpointConfig(
-            save_interval=args.eval_interval,
+            save_interval=(
+                args.save_interval if args.save_interval is not None else args.eval_interval
+            ),
             save=checkpoint_dir,
             load=checkpoint_dir,  # Resume from this directory (if exists)
             most_recent_k=args.checkpoint_keep_last,  # Keeps most recent checkpoints (-1 keeps all)
@@ -441,5 +602,7 @@ if __name__ == "__main__":
     args = get_args()
     try:
         main(args)
+    except BaseException:
+        dist.abort()  # peers may be stuck in a collective this rank will never reach
     finally:
         dist.cleanup()
